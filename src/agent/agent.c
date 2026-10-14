@@ -1,3 +1,4 @@
+#include "lang/lang.h"
 #include "arch.h"
 #include "agent.h"
 #include "rtc.h"
@@ -9,6 +10,7 @@
 #include "mem.h"
 #include "io.h"
 #include "gui.h"
+#include "fb.h"
 
 #define RESULT_LBA          20
 #define RESUME_FLAG_LBA     25
@@ -40,6 +42,32 @@ static const struct agent_profile AGENT_REGISTRY[] = {
         "Eres SOMA, el orquestador principal de SOMA OS. Coordina a los agentes especializados, decide a quien delegar y resume resultados verificables. No ejecutes directamente las operaciones ordinarias del sistema: delegalas a Mayordomo.",
         "/agent/soma.txt",
         "/agent/soma_stm.txt"
+    },
+            {
+        "coder",
+        "CODER - BARE-METAL SOMA-LANG DEVELOPER (AUTONOMOUS CODE-COMPILE-REPAIR)",
+        "Eres Coder, ingeniero autonomo de software de SOMA OS. Creas y corriges programas en SOMA-LANG (.soma) en Ring 0.\n"
+        "REGLAS ESTRICTAS DE SOMA-LANG (NO PYTHON, NO BASH):\n"
+        "1. PROHIBIDO USAR PYTHON: No uses import, def, for..in, elif ni f-strings. NUNCA.\n"
+        "2. Variables: let x = 0; o asignaciones directas x = 10;.\n"
+        "3. Condicionales: if (c) { ... } else if (c) { ... } else { ... }.\n"
+        "4. Bucles: while (c) { ... } o for (let i = 0; i < N; i += 1) { ... }.\n"
+        "5. Cadenas: comillas dobles o simples. Concatenacion con +. Conversion con to_int(s), to_str(n).\n"
+        "6. Arrays y Tablas: [1, 2, 3] con .push(), .pop(), .len(). Tablas: { a: 1 } con t.a.\n"
+        "7. Ventanas Graficas: win.create(titulo, x, y, w, h); win.clear(color); win.rect(x,y,w,h,col); win.text(x,y,txt,col); win.present();\n"
+        "8. Bucle interactivo con raton: while (win.active()) { let m = win.mouse(); if (m.clicked) { ... } sys.sleep(30); }\n"
+        "9. PROHIBIDO USAR '...' O PLACEHOLDERS: Escribe SIEMPRE el codigo COMPLETO, linea por linea, sin abreviar.\n"
+        "10. BUCLE DE DESARROLLO OBLIGATORIO (WRITE -> COMPILE -> REPAIR -> APP):\n"
+        "    Paso 1: Emite UN solo write inicial con el archivo completo; no escribas fragmentos ni reinicies la creacion por etapas.\n"
+        "    Paso 2: El usuario/ejecutor debe recibir una sola orden concreta en cmd. Mantén thought en 1-2 frases; nunca repitas el codigo dentro de thought.\n"
+        "    Paso 3: Cada write debe ir seguido de compile antes de otra escritura. Si falla, corrige ese error concreto; no hagas escrituras exploratorias.\n"
+        "    Paso 4: Si compile y lint pasan, no vuelvas a escribir: ejecuta app <ruta.soma> una sola vez.\n"
+        "    Paso 5: Solo emite action='final' despues de write, compile correcto y lanzamiento app confirmado.\n"
+        "    Paso 6: No incluyas '...', pseudocodigo, bloques omitidos ni marcadores en el archivo. Si no cabe, simplifica el programa completo en vez de truncarlo.\n"
+        "    Paso 7: Tras dos reparaciones fallidas, detente con el ultimo error concreto; no agotes ciclos repitiendo escrituras.\n"
+        "    Paso 8: Distingue lanzamiento de funcionamiento probado: no afirmes que los clics o toda la logica fueron probados automaticamente.",
+        "/agent/coder.txt", /*PL5_CODER_PROFILE*/
+        "/agent/coder_stm.txt"
     },
     {
         "mayordomo",
@@ -613,14 +641,174 @@ void agent_state_load(void)
 
 static void history_add_note(char *hbuf, uint32_t *hist_len, uint32_t max_hist, int step, const char *msg)
 {
-    if (!hbuf || !hist_len || *hist_len >= max_hist - 400) return;
+    if (!hbuf || !hist_len) return;
+    if (*hist_len >= max_hist - 400) {
+        uint32_t drop = 0;
+        const char *next_step = find_substr(hbuf + 100, "\n- Paso ");
+        if (next_step) drop = (uint32_t)(next_step + 1 - hbuf);
+        else drop = *hist_len / 2;
+        if (drop > 0 && drop < *hist_len) {
+            uint32_t rem = *hist_len - drop;
+            for (uint32_t k = 0; k < rem; ++k) hbuf[k] = hbuf[drop + k];
+            *hist_len = rem;
+            hbuf[rem] = '\0';
+        }
+    }
     uint32_t pos = *hist_len;
     fb_puts(hbuf, max_hist, &pos, "- Paso ");
-    fb_putc(hbuf, max_hist, &pos, (char)('0' + step));
+    fb_put_dec(hbuf, max_hist, &pos, (uint64_t)step);
     fb_puts(hbuf, max_hist, &pos, ": ");
     fb_puts(hbuf, max_hist, &pos, msg);
     fb_puts(hbuf, max_hist, &pos, "\n");
     *hist_len = pos;
+}
+
+static const char *find_substr_last(const char *haystack, const char *needle)
+{
+    const char *last = 0;
+    const char *p = haystack;
+    if (!haystack || !needle || !*needle) return 0;
+    while ((p = find_substr(p, needle)) != 0) {
+        last = p;
+        p++;
+    }
+    return last;
+}
+
+static int coder_write_blocked_by_sequence(const char *history)
+{
+    const char *last_write = find_substr_last(history, "ejecutaste 'write ");
+    const char *last_compile = find_substr_last(history, "ejecutaste 'compile ");
+    const char *ok = find_substr_last(history, "COMPILE OK");
+    const char *ok_alt = find_substr_last(history, "Compilacion exitosa");
+    const char *err = find_substr_last(history, "COMPILE ERROR");
+    const char *err_alt = find_substr_last(history, "COMPILER ERROR");
+    const char *auto_ce = find_substr_last(history, "AUTO-COMPILE-ERROR");
+    const char *auto_le = find_substr_last(history, "AUTO-LINT-ERROR");
+    const char *auto_ae = find_substr_last(history, "AUTO-APP-ERROR");
+    const char *success = ok;
+    const char *failure = err;
+    if (ok_alt && (!success || ok_alt > success)) success = ok_alt;
+    if (err_alt && (!failure || err_alt > failure)) failure = err_alt;
+    if (auto_ce && (!failure || auto_ce > failure)) failure = auto_ce;
+    if (auto_le && (!failure || auto_le > failure)) failure = auto_le;
+    if (auto_ae && (!failure || auto_ae > failure)) failure = auto_ae;
+    if (!last_write) return 0;
+    if (!last_compile || last_compile < last_write) return 1;
+    /* Un error concreto posterior al ultimo compile habilita UNA reparacion. */
+    if (failure && failure > last_compile && (!success || failure > success)) return 0;
+    /* Incluso despues de compile OK + app, una escritura repetida se intercepta:
+       el llamador verifica la secuencia y termina, en vez de abrir otro ciclo. */
+    if (success && success > last_compile) return 1;
+    return 1; /* resultado ambiguo: validar antes de volver a escribir */
+}
+
+/* Helpers del gate dinamico: parseo limitado, historial reproducible y salida honesta. */
+static int coder_extract_soma_target(const char *cmd, char *out, uint32_t cap)
+{
+    const char *p;
+    uint32_t n = 0;
+    if (!cmd || !out || cap < 8) return 0;
+    out[0] = '\0';
+    if (!(cmd[0] == 'w' && cmd[1] == 'r' && cmd[2] == 'i' &&
+          cmd[3] == 't' && cmd[4] == 'e' && cmd[5] == ' ')) return 0;
+    p = cmd + 5;
+    while (*p == ' ') p++;
+    if (*p == '\'' || *p == '"') p++;
+    while (*p && *p != ' ' && *p != '\'' && *p != '"' && n + 1 < cap) out[n++] = *p++;
+    out[n] = '\0';
+    if (n < 6 || out[0] != '/' || find_substr(out, "..") || !find_substr(out, ".soma")) return 0;
+    if (!(find_substr(out, "/workspace/") == out || find_substr(out, "/apps/") == out)) return 0;
+    return 1;
+}
+
+static uint32_t coder_text_len(const char *s)
+{
+    uint32_t n = 0;
+    while (s && s[n]) n++;
+    return n;
+}
+
+static int coder_count_marker(const char *history, const char *marker)
+{
+    const char *p = history;
+    int n = 0;
+    if (!history || !marker || !*marker) return 0;
+    while ((p = find_substr(p, marker)) != 0) { n++; p++; }
+    return n;
+}
+
+static void coder_record_auto_result(char *history, uint32_t *hist_len, uint32_t max_hist,
+                                     int step, const char *cmd, const char *result)
+{
+    char note[720];
+    uint32_t p = 0, i = 0;
+    fb_puts(note, sizeof(note), &p, "AUTO-GATE: ejecutaste '");
+    fb_puts(note, sizeof(note), &p, cmd ? cmd : "(comando desconocido)");
+    fb_puts(note, sizeof(note), &p, "' -> Resultado: '");
+    while (result && result[i] && i < 360 && p + 4 < sizeof(note)) note[p++] = result[i++];
+    if (result && result[i]) fb_puts(note, sizeof(note), &p, " [... salida completa en /tmp/last_tool.log ...]");
+    fb_puts(note, sizeof(note), &p, "'");
+    history_add_note(history, hist_len, max_hist, step, note);
+}
+
+static int coder_compile_output_ok(const char *s)
+{
+    return s && (find_substr(s, "COMPILE OK") || find_substr(s, "Compilacion exitosa"));
+}
+
+static int coder_app_output_started(const char *s)
+{
+    return s && (find_substr(s, "SPAWN OK") || find_substr(s, "[SPAWN]") ||
+                  find_substr(s, "TID=") || find_substr(s, "Programa ejecutado con exito") ||
+                  find_substr(s, "Programa finalizado con exito"));
+}
+
+static int coder_sequence_completed(const char *history)
+{
+    const char *w = find_substr_last(history, "ejecutaste 'write ");
+    const char *c = find_substr_last(history, "ejecutaste 'compile ");
+    const char *ok = find_substr_last(history, "COMPILE OK");
+    const char *ok2 = find_substr_last(history, "Compilacion exitosa");
+    const char *a = find_substr_last(history, "ejecutaste 'app ");
+    const char *spawn = find_substr_last(history, "SPAWN OK");
+    const char *tid = find_substr_last(history, "TID=");
+    const char *run = find_substr_last(history, "Programa ejecutado con exito");
+    if (ok2 && (!ok || ok2 > ok)) ok = ok2;
+    if (tid && (!spawn || tid > spawn)) spawn = tid;
+    if (run && (!spawn || run > spawn)) spawn = run;
+    return w && c && ok && a && spawn && w < c && c < ok && a > ok && spawn > a;
+}
+
+/* Evita volver a incluir cientos o miles de bytes de codigo en cada prompt.
+ * Conserva la ruta de write, pero omite el cuerpo; otros comandos se limitan
+ * a 220 caracteres cuando son largos. */
+static void history_append_command(char *dst, uint32_t max, uint32_t *pos, const char *cmd)
+{
+    uint32_t n = 0, i;
+    if (!dst || !pos || !cmd) return;
+    while (cmd[n]) n++;
+    if (cmd[0] == 'w' && cmd[1] == 'r' && cmd[2] == 'i' && cmd[3] == 't' && cmd[4] == 'e' && cmd[5] == ' ') {
+        const char *p = cmd + 6;
+        char path[96];
+        uint32_t pn = 0;
+        while (*p == ' ') p++;
+        while (*p && *p != ' ' && pn + 1 < sizeof(path)) path[pn++] = *p++;
+        path[pn] = '\0';
+        fb_puts(dst, max, pos, "write ");
+        fb_puts(dst, max, pos, path);
+        fb_puts(dst, max, pos, " '<contenido omitido para ahorrar contexto>'");
+        return;
+    }
+    if (n > 220) {
+        for (i = 0; i < 180 && cmd[i] && *pos + 1 < max; ++i) {
+            dst[(*pos)++] = cmd[i];
+        }
+        dst[*pos] = '\0';
+        fb_puts(dst, max, pos, " [comando largo resumido]");
+        return;
+    }
+    fb_puts(dst, max, pos, cmd);
 }
 
 
@@ -1209,6 +1397,18 @@ static void mayordomo_run(const char *mission)
     if (mayordomo_try_catalog(mission)) return;
     if (mayordomo_try_skill(mission)) return;
 
+    if (mayordomo_has(mission, "ejecuta") || mayordomo_has(mission, "run ") ||
+        mayordomo_has(mission, "corre ") || mayordomo_has(mission, "lanza ")) {
+        char value[FS_NAME_MAX + 8], path[FS_NAME_MAX + 8], command[FS_NAME_MAX + 16];
+        if (mayordomo_extract_value(mission, value, sizeof(value)) &&
+            mayordomo_resolve_path(value, path, sizeof(path))) {
+            uint32_t p = 0;
+            fb_puts(command, sizeof(command), &p, "run ");
+            fb_puts(command, sizeof(command), &p, path);
+            mayordomo_dispatch("Ejecutando script SOMA-LANG", command);
+            return;
+        }
+    }
     if (mayordomo_has(mission, "ram") || mayordomo_has(mission, "heap") ||
         mayordomo_has(mission, "memoria")) {
         mayordomo_dispatch("Telemetria de RAM y heap", mayordomo_ram_command(mission));
@@ -1312,6 +1512,161 @@ static void mayordomo_run(const char *mission)
     mayordomo_store_reply("[Mayordomo] No he identificado la operacion. Usa una tarea concreta: 'muestra la RAM', 'muestra el contenido del disco', 'busca un archivo llamado X' o 'crea una carpeta llamada X'.", 1);
 }
 
+/* SOMA_LLM_COMPLETENESS_GUARD_V1
+ * Detecta JSON incompleto y evita escribir programas .soma truncados.
+ * Se ejecuta antes de dispatch_agent_command: el VFS nunca recibe ese cuerpo.
+ */
+static uint32_t llmfix_len(const char *s)
+{
+    uint32_t n = 0;
+    while (s && s[n]) ++n;
+    return n;
+}
+
+static int llmfix_count(const char *hay, const char *needle)
+{
+    int count = 0;
+    uint32_t nlen = llmfix_len(needle);
+    const char *p = hay;
+    if (!hay || !needle || !nlen) return 0;
+    while ((p = find_substr(p, needle)) != 0) { ++count; p += nlen; }
+    return count;
+}
+
+/* Valida que exista un objeto JSON equilibrado, ignorando llaves dentro de strings.
+ * Acepta texto explicativo antes/despues; el parser actual sigue extrayendo campos.
+ */
+static int llmfix_json_complete(const char *s)
+{
+    const char *p = s;
+    char stack[64];
+    uint32_t depth = 0;
+    int in_string = 0, escaped = 0, started = 0, closed = 0;
+    if (!s) return 0;
+    while (*p) {
+        char c = *p++;
+        if (!started) {
+            if (c != '{') continue;
+            started = 1;
+            stack[depth++] = '{';
+            continue;
+        }
+        if (closed) continue;
+        if (in_string) {
+            if (escaped) { escaped = 0; continue; }
+            if (c == '\\') { escaped = 1; continue; }
+            if (c == '"') in_string = 0;
+            continue;
+        }
+        if (c == '"') { in_string = 1; continue; }
+        if (c == '{' || c == '[') {
+            if (depth >= sizeof(stack)) return 0;
+            stack[depth++] = c;
+        } else if (c == '}' || c == ']') {
+            char want = (c == '}') ? '{' : '[';
+            if (!depth || stack[depth - 1] != want) return 0;
+            --depth;
+            if (depth == 0) closed = 1;
+        }
+    }
+    return started && closed && !in_string && !escaped && depth == 0;
+}
+
+static int llmfix_is_soma_write(const char *cmd)
+{
+    const char *p = cmd;
+    const char *start;
+    uint32_t n = 0;
+    if (!p) return 0;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (!(p[0] == 'w' && p[1] == 'r' && p[2] == 'i' &&
+          p[3] == 't' && p[4] == 'e' && (p[5] == ' ' || p[5] == '\t'))) return 0;
+    p += 5;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (*p == '\'' || *p == '"') ++p;
+    start = p;
+    while (*p && *p != ' ' && *p != '\t' && *p != '\'' && *p != '"') { ++p; ++n; }
+    return n >= 6 && n >= 5 && start[n-5] == '.' &&
+           (start[n-4] == 's' || start[n-4] == 'S') &&
+           (start[n-3] == 'o' || start[n-3] == 'O') &&
+           (start[n-2] == 'm' || start[n-2] == 'M') &&
+           (start[n-1] == 'a' || start[n-1] == 'A');
+}
+
+/* Solo acepta write <ruta.soma> '<programa>' con delimitadores balanceados.
+ * No intenta demostrar semantica; compile/lint siguen siendo obligatorios.
+ */
+static int llmfix_soma_write_complete(const char *cmd)
+{
+    const char *p = cmd, *q, *body, *end;
+    char outer, quote = 0, stack[256];
+    uint32_t depth = 0;
+    int escaped = 0, in_line_comment = 0;
+    if (!llmfix_is_soma_write(cmd)) return 1;
+    while (*p == ' ' || *p == '\t') ++p;
+    p += 5;
+    while (*p == ' ' || *p == '\t') ++p;
+    /* Saltar primero la ruta; la comilla del cuerpo aparece despues del espacio. */
+    if (*p == '\'' || *p == '\"') {
+        char path_quote = *p++;
+        while (*p && *p != path_quote) { if (*p == '\\' && p[1]) ++p; ++p; }
+        if (*p != path_quote) return 0;
+        ++p;
+    } else {
+        while (*p && *p != ' ' && *p != '\t') ++p;
+    }
+    while (*p == ' ' || *p == '\t') ++p;
+    if (*p != '\'' && *p != '\"') return 0;
+    outer = *p++;
+    body = p;
+    end = cmd + llmfix_len(cmd);
+    while (end > body && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) --end;
+    if (end <= body || end[-1] != outer) return 0;
+    --end; /* excluye comilla externa de cierre */
+    if (end <= body) return 0;
+
+    /* '...' es un marcador prohibido en el perfil SOMA Coder. */
+    for (q = body; end - q >= 3; ++q)
+        if (q[0] == '.' && q[1] == '.' && q[2] == '.') return 0;
+
+    for (q = body; q < end; ++q) {
+        char c = *q;
+        if (in_line_comment) {
+            if (c == '\n') in_line_comment = 0;
+            continue;
+        }
+        if (quote) {
+            if (escaped) { escaped = 0; continue; }
+            if (c == '\\') { escaped = 1; continue; }
+            if (c == quote) quote = 0;
+            continue;
+        }
+        if (c == '/' && q + 1 < end && q[1] == '/') { in_line_comment = 1; ++q; continue; }
+        if (c == '"' || c == '\'') { quote = c; continue; }
+        if (c == '{' || c == '(' || c == '[') {
+            if (depth >= sizeof(stack)) return 0;
+            stack[depth++] = c;
+        } else if (c == '}' || c == ')' || c == ']') {
+            char want = (c == '}') ? '{' : ((c == ')') ? '(' : '[');
+            if (!depth || stack[depth - 1] != want) return 0;
+            --depth;
+        }
+    }
+    if (quote || escaped || depth) return 0;
+    /* Rechaza finales típicos cortados aunque los delimitadores anteriores cierren. */
+    while (end > body && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) --end;
+    if (end <= body) return 0;
+    if (end[-1] == '=' || end[-1] == '+' || end[-1] == '-' || end[-1] == '*' ||
+        end[-1] == '/' || end[-1] == ',' || end[-1] == '.') return 0;
+    return 1;
+}
+
+static void llmfix_save_debug(const char *path, const char *text)
+{
+    uint32_t n = llmfix_len(text);
+    if (path && text && n) (void)vfs_write(path, text, n);
+}
+
 void agent_run(const char *agent_name, const char *mission)
 {
     while (*mission == ' ') mission++;
@@ -1359,6 +1714,7 @@ void agent_run(const char *agent_name, const char *mission)
     agent_created_html[0] = '\0';
 
     int requested_files_info = 0;
+    (void)requested_files_info;
     if (find_substr(mission, "archivo") != 0 || find_substr(mission, "archivos") != 0 ||
         find_substr(mission, "disco") != 0 || find_substr(mission, "almacenamiento") != 0 ||
         find_substr(mission, "fichero") != 0 || find_substr(mission, "ficheros") != 0 ||
@@ -1391,8 +1747,10 @@ void agent_run(const char *agent_name, const char *mission)
 
     uint32_t ap_len = 0;
     int finished = 0;
+    int coder_mode = (str_eq_ci(agent->name, "coder") || find_substr(mission, ".soma") != 0);
+    int max_steps = coder_mode ? 10 : 14;
 
-    for (int step = 1; step <= 6; ++step) {
+    for (int step = 1; step <= max_steps; ++step) {
         ap_len = 0;
         struct rtc_time cur_t;
         rtc_get_datetime(&cur_t);
@@ -1420,6 +1778,8 @@ void agent_run(const char *agent_name, const char *mission)
 
         const char *p_ctx = "HERRAMIENTAS BARE-METAL DISPONIBLES:\n"
                             "  delegate <agente> \"<mision>\"  Delega a mayordomo, buscador o maquetador.\n"
+                                                        "  run <ruta.soma>           Compila y ejecuta codigo nativo SOMA-LANG en Ring 0.\n"
+                            "  win.*                     Primitivas de ventanas y raton en .soma (create, clear, rect, text, present, mouse).\n" /*PL5_TOOL_WIN*/
                             "  search <consulta>         Busca informacion web en vivo (noticias, eventos, fechas, datos).\n"
                             "  mem_search <termino>      Busca conceptos o palabras clave en el arbol de memoria /mem/.\n"
                             "  mem_tree                  Muestra el arbol general de memoria estructurada.\n"
@@ -1436,7 +1796,7 @@ void agent_run(const char *agent_name, const char *mission)
                             "  src_ls | src_cat <f> [off] | src_grep <f> <pat>\n"
                             "\n"
                             "FORMATO OBLIGATORIO DE RESPUESTA JSON:\n"
-                            "{\"thought\":\"analisis paso a paso\",\"action\":\"tool|patch|final\","
+                            "{\"thought\":\"resumen operativo breve\",\"action\":\"tool|patch|final\","
                             "\"cmd\":\"comando\",\"patch\":{\"file\":\"src/f.c\","
                             "\"search\":\"exacto\",\"replace\":\"nuevo\"},"
                             "\"verdict\":\"respuesta final si action=final\"}\n"
@@ -1445,27 +1805,92 @@ void agent_run(const char *agent_name, const char *mission)
                             "POLITICA DE DIRECTORIOS Y ESPACIOS DE TRABAJO:\n"
                             "1) RUTA PREFERENTE PARA AGENTES: Si creas notas, informes o borradores generados por la IA, usa preferentemente '/workspace/' (ej. '/workspace/notas.txt' o '/workspace/informe.txt') salvo que el usuario pida otra ruta explicita.\n"
                             "2) ARCHIVOS DE USUARIO: Los documentos y notas personales del usuario se encuentran en '/mis_archivos/'.\n"
-                            "3) Si la mision pide crear/guardar/modificar un archivo tras buscar o procesar, DEBES ejecutar 'write <ruta> \"<contenido>\"' en un paso intermedio ANTES de emitir action='final'.\n"
+                            "3) Si la mision pide crear/guardar/modificar un archivo tras buscar o procesar, DEBES ejecutar 'write <ruta> '<contenido>'' (con comillas simples) en un paso intermedio ANTES de emitir action='final'.\n" /*PL7_SOMA_PROMPT*/
                             "4) Solo emite action='final' cuando TODOS los objetivos de la mision esten completamente cumplidos en el hardware.\n";
         fb_puts(agent_prompt_buf, 16384, &ap_len, p_ctx);
+        /* SOMA_CODER_DYNAMIC_GATE_V3 */
+        /* SOMA_CODER_CONTEXT_INJECTION: Inyectar el codigo actual del archivo al Coder */
+        if (str_eq_ci(agent->name, "coder") && ap_len < 12000) {
+            char target_p[96];
+            const char *fs;
+            target_p[0] = '\0';
+            fs = find_substr(mission, "/workspace/");
+            if (!fs) fs = find_substr(mission, "/apps/");
+            if (!fs) fs = find_substr(mission, "/");
+            if (fs) {
+                uint32_t pi = 0;
+                while (*fs && *fs != ' ' && *fs != ':' && *fs != '\'' && *fs != '"' && pi < sizeof(target_p) - 1)
+                    target_p[pi++] = *fs++;
+                target_p[pi] = '\0';
+            }
+            if (target_p[0] != '\0') {
+                char *ex_buf = (char *)kmalloc(4096);
+                if (ex_buf) {
+                    int ex_r = vfs_read(target_p, ex_buf, 4095);
+                    if (ex_r > 0) {
+                        uint32_t lim, k;
+                        ex_buf[ex_r] = '\0';
+                        fb_puts(agent_prompt_buf, 16384, &ap_len, "\n[CODIGO ACTUAL EN ");
+                        fb_puts(agent_prompt_buf, 16384, &ap_len, target_p);
+                        fb_puts(agent_prompt_buf, 16384, &ap_len, " (Base para modificar)]:\n");
+                        lim = (ex_r > 1800) ? 1800 : (uint32_t)ex_r;
+                        for (k = 0; k < lim && ap_len < 16384 - 2400; ++k)
+                            agent_prompt_buf[ap_len++] = ex_buf[k];
+                        if (ex_r > 1800) fb_puts(agent_prompt_buf, 16384, &ap_len, "\n[EXTRACTO INCOMPLETO: no copiar como programa completo; solo contexto parcial]\n");
+                        fb_puts(agent_prompt_buf, 16384, &ap_len, "\n");
+                    }
+                    kfree(ex_buf);
+                }
+            }
+        }
 
         inject_agent_memory(agent, agent_prompt_buf, 16384, &ap_len);
 
         if (hist_len > 0) {
-            const char *h_hdr = "\nAcciones ya ejecutadas en pasos anteriores:\n";
-            while (*h_hdr) agent_prompt_buf[ap_len++] = *h_hdr++;
-            for (uint32_t h = 0; h < hist_len && ap_len < 16384 - 600; ++h) {
+            const char *h_hdr = "\nAcciones ya ejecutadas en pasos anteriores (los cuerpos de write se omiten):\n";
+            uint32_t hist_start = 0;
+            while (*h_hdr && ap_len < 16384 - 1) agent_prompt_buf[ap_len++] = *h_hdr++;
+            /* El historial completo permanece para auditoría; al LLM solo se le pasan
+             * los últimos ~2600 caracteres para que los errores recientes no se pierdan
+             * detrás de códigos antiguos y evitar el crecimiento exponencial del prompt. */
+            if (coder_mode && hist_len > 2600u) {
+                hist_start = hist_len - 2600u;
+                while (hist_start < hist_len && history_buf[hist_start] != '\n') hist_start++;
+                if (hist_start < hist_len) hist_start++;
+                fb_puts(agent_prompt_buf, 16384, &ap_len, "[historial Coder reducido a los pasos recientes]\n");
+            }
+            for (uint32_t h = hist_start; h < hist_len && ap_len < 16384 - 600; ++h) {
                 agent_prompt_buf[ap_len++] = history_buf[h];
             }
         }
 
-        const char *p_rules = "\nInstruccion: Razona que falta para cumplir la mision y genera el objeto JSON.";
+        const char *p_rules = "\nInstruccion: Devuelve solo un JSON valido. Para Coder, thought debe ser un resumen operativo de 1-2 frases; no repitas el codigo en thought. cmd debe contener una sola accion concreta y el contenido completo solo dentro de write.";
         while (*p_rules && ap_len < 16384 - 1) agent_prompt_buf[ap_len++] = *p_rules++;
         agent_prompt_buf[ap_len] = '\0';
 
         if (!llm_chat_json(agent_prompt_buf, agent_reply_buf, 32768, 60000)) {
             kprint("Error en comunicacion estructurada con el agente.\n");
             break;
+        }
+
+        /* No extraer ni ejecutar campos si el cuerpo JSON del LLM llego truncado. */
+        if (!llmfix_json_complete(agent_reply_buf)) {
+            const char *why = "LLM-TRUNCATED-JSON: respuesta incompleta o JSON desequilibrado; no se ejecuto ninguna accion. Reintenta con un JSON mas corto y una unica accion.";
+            llmfix_save_debug("/tmp/llm_respuesta_incompleta.json", agent_reply_buf);
+            history_add_note(history_buf, &hist_len, 8192, step, why);
+            kprint("\n[LLM TRUNCADO]: JSON incompleto; respuesta guardada en /tmp/llm_respuesta_incompleta.json. Accion no ejecutada.\n");
+            if (llmfix_count(history_buf, "LLM-TRUNCATED-") >= 3) {
+                const char *fail = "[LLM RESPUESTA INCOMPLETA] Tres respuestas llegaron truncadas o como JSON invalido. No se ejecuto la accion parcial. Revisa /tmp/llm_respuesta_incompleta.json y la capa HTTP del cliente LLM.";
+                uint32_t rp = 0, sl = 0;
+                agent_last_response[0] = '\0';
+                fb_puts(agent_last_response, sizeof(agent_last_response), &rp, fail);
+                while (fail[sl]) ++sl;
+                (void)vfs_write("/agent/blackboard.txt", fail, sl);
+                kprint(fail); kprint("\n");
+                finished = 1;
+                break;
+            }
+            continue;
         }
 
         char act[32];
@@ -1476,6 +1901,29 @@ void agent_run(const char *agent_name, const char *mission)
         llm_json_get(agent_reply_buf, "cmd", cmd_f, 32768);
         llm_json_get(agent_reply_buf, "patch", patch_f, 8192);
         llm_json_get(agent_reply_buf, "verdict", verdict, 32768);
+
+
+        /* Una respuesta JSON puede estar completa y contener un programa cortado.
+         * En ese caso se rechaza ANTES de dispatch_agent_command/write al RamFS. */
+        if (str_eq_ci(agent->name, "coder") && llmfix_is_soma_write(cmd_f) &&
+            !llmfix_soma_write_complete(cmd_f)) {
+            const char *why = "LLM-TRUNCATED-CODE: write .soma incompleto (comillas o delimitadores sin cerrar, o placeholder). No se escribio. Reenvia el programa completo en una sola accion write; reduce thought y no incluyas explicaciones.";
+            llmfix_save_debug("/tmp/llm_comando_write_rechazado.txt", cmd_f);
+            history_add_note(history_buf, &hist_len, 8192, step, why);
+            kprint("\n[LLM TRUNCADO]: bloqueada escritura .soma incompleta; diagnostico en /tmp/llm_comando_write_rechazado.txt.\n");
+            if (llmfix_count(history_buf, "LLM-TRUNCATED-") >= 3) {
+                const char *fail = "[CODER NO VERIFICADO] Tres respuestas generaron JSON/codigo incompleto. Ningun write parcial adicional se ejecutara. Revisa /tmp/llm_comando_write_rechazado.txt y el cliente HTTP LLM.";
+                uint32_t rp = 0, sl = 0;
+                agent_last_response[0] = '\0';
+                fb_puts(agent_last_response, sizeof(agent_last_response), &rp, fail);
+                while (fail[sl]) ++sl;
+                (void)vfs_write("/agent/blackboard.txt", fail, sl);
+                kprint(fail); kprint("\n");
+                finished = 1;
+                break;
+            }
+            continue;
+        }
 
         /* Si el modelo produjo razonamiento en <think>...</think>, capturarlo */
         if (th[0] == '\0') {
@@ -1543,6 +1991,107 @@ void agent_run(const char *agent_name, const char *mission)
             const char *clean_cmd = cmd_f;
             while (*clean_cmd == ' ') clean_cmd++;
 
+            if (coder_mode && clean_cmd[0] == 'w' && clean_cmd[1] == 'r' &&
+                clean_cmd[2] == 'i' && clean_cmd[3] == 't' && clean_cmd[4] == 'e' &&
+                clean_cmd[5] == ' ' && find_substr(clean_cmd, ".soma") &&
+                coder_write_blocked_by_sequence(history_buf)) {
+                char auto_target[96];
+                char auto_cmd[128];
+                uint32_t acp = 0;
+
+                /* Si la secuencia ya termino, no ejecutar otra escritura redundante. */
+                if (coder_sequence_completed(history_buf)) {
+                    const char *summary = "[CODER VERIFICADO PARCIALMENTE] El archivo se escribio, compile confirmo 0 errores, lint no encontro errores graves y app fue lanzada. La interaccion grafica y la logica funcional completa requieren prueba manual; no se declara una prueba funcional que no se haya observado.";
+                    uint32_t rp = 0, sl = 0;
+                    agent_last_response[0] = '\0';
+                    fb_puts(agent_last_response, sizeof(agent_last_response), &rp, summary);
+                    while (summary[sl]) sl++;
+                    vfs_write("/agent/blackboard.txt", summary, sl);
+                    stm_append_interaction(agent, mission, summary);
+                    kprint("\n"); kprint(summary); kprint("\n");
+                    finished = 1;
+                    break;
+                }
+
+                if (!coder_extract_soma_target(clean_cmd, auto_target, sizeof(auto_target))) {
+                    kprint("\n>> [GUARDIA CODER]: Ruta .soma no valida; no se ejecutara ni compilara esa ruta.\n");
+                    history_add_note(history_buf, &hist_len, 8192, step,
+                        "AUTO-COMPILE-ERROR: ruta de write rechazada. Usa una ruta .soma absoluta dentro de /workspace o /apps.");
+                    continue;
+                }
+
+                /* En vez de repetir 'write' a ciegas, compilar la version que ya esta guardada. */
+                fb_puts(auto_cmd, sizeof(auto_cmd), &acp, "compile ");
+                fb_puts(auto_cmd, sizeof(auto_cmd), &acp, auto_target);
+                tool_feedback_buf[0] = '\0';
+                dispatch_agent_command(auto_cmd, tool_feedback_buf, 16384);
+                coder_record_auto_result(history_buf, &hist_len, 8192, step, auto_cmd, tool_feedback_buf);
+                vfs_write("/tmp/last_tool.log", tool_feedback_buf, coder_text_len(tool_feedback_buf));
+
+                if (!coder_compile_output_ok(tool_feedback_buf)) {
+                    history_add_note(history_buf, &hist_len, 8192, step,
+                        "AUTO-COMPILE-ERROR: la version previamente escrita no compila o la salida es ambigua. La siguiente write se permite como reparacion; corrige el diagnostico concreto y vuelve a compilar.");
+                    if (coder_count_marker(history_buf, "AUTO-COMPILE-ERROR") >= 3) {
+                        const char *failure_summary = "[CODER NO VERIFICADO] Se agotaron la creacion inicial y dos reparaciones: el archivo sigue sin una compilacion confirmada. No se declara exito. Revisa /tmp/last_tool.log y el ultimo diagnostico del compilador.";
+                        uint32_t rp = 0, sl = 0;
+                        agent_last_response[0] = '\0';
+                        fb_puts(agent_last_response, sizeof(agent_last_response), &rp, failure_summary);
+                        while (failure_summary[sl]) sl++;
+                        vfs_write("/agent/blackboard.txt", failure_summary, sl);
+                        stm_append_interaction(agent, mission, failure_summary);
+                        kprint("\n"); kprint(failure_summary); kprint("\n");
+                        finished = 1;
+                        break;
+                    }
+                    kprint("\n>> [GUARDIA CODER]: Compile automatico detecto un fallo; se habilita una reparacion dirigida.\n");
+                    continue;
+                }
+
+                /* Compile OK: detectar problemas graves de lint antes del lanzamiento. */
+                acp = 0; auto_cmd[0] = '\0';
+                fb_puts(auto_cmd, sizeof(auto_cmd), &acp, "lint ");
+                fb_puts(auto_cmd, sizeof(auto_cmd), &acp, auto_target);
+                tool_feedback_buf[0] = '\0';
+                dispatch_agent_command(auto_cmd, tool_feedback_buf, 16384);
+                coder_record_auto_result(history_buf, &hist_len, 8192, step, auto_cmd, tool_feedback_buf);
+                vfs_write("/tmp/last_tool.log", tool_feedback_buf, coder_text_len(tool_feedback_buf));
+                if (find_substr(tool_feedback_buf, "E:") || find_substr(tool_feedback_buf, "Placeholder '...'") ||
+                    find_substr(tool_feedback_buf, "Codigo vacio")) {
+                    history_add_note(history_buf, &hist_len, 8192, step,
+                        "AUTO-LINT-ERROR: lint detecto uno o mas errores graves. La siguiente write se permite como reparacion dirigida; elimina placeholders y resuelve los avisos E: antes de volver a compilar.");
+                    kprint("\n>> [GUARDIA CODER]: Lint detecto errores graves; se habilita reparacion dirigida.\n");
+                    continue;
+                }
+
+                /* Si compile y lint pasan, completar una sola vez el lanzamiento de la app. */
+                acp = 0; auto_cmd[0] = '\0';
+                fb_puts(auto_cmd, sizeof(auto_cmd), &acp, "app ");
+                fb_puts(auto_cmd, sizeof(auto_cmd), &acp, auto_target);
+                tool_feedback_buf[0] = '\0';
+                dispatch_agent_command(auto_cmd, tool_feedback_buf, 16384);
+                coder_record_auto_result(history_buf, &hist_len, 8192, step, auto_cmd, tool_feedback_buf);
+                vfs_write("/tmp/last_tool.log", tool_feedback_buf, coder_text_len(tool_feedback_buf));
+                if (!coder_app_output_started(tool_feedback_buf)) {
+                    history_add_note(history_buf, &hist_len, 8192, step,
+                        "AUTO-APP-ERROR: compile y lint pasaron pero no se confirmo el lanzamiento. No afirmes exito; inspecciona el resultado y corrige la causa concreta antes de otra escritura.");
+                    kprint("\n>> [GUARDIA CODER]: No se pudo confirmar el lanzamiento; se permite una reparacion dirigida.\n");
+                    continue;
+                }
+
+                {
+                    const char *summary = "[CODER VERIFICADO PARCIALMENTE] Compile OK, lint sin errores graves y lanzamiento de app confirmado. El lanzamiento no demuestra por si solo que todos los botones, eventos o reglas funcionen; realiza una prueba manual de la interfaz antes de afirmar funcionalidad completa.";
+                    uint32_t rp = 0, sl = 0;
+                    agent_last_response[0] = '\0';
+                    fb_puts(agent_last_response, sizeof(agent_last_response), &rp, summary);
+                    while (summary[sl]) sl++;
+                    vfs_write("/agent/blackboard.txt", summary, sl);
+                    stm_append_interaction(agent, mission, summary);
+                    kprint("\n"); kprint(summary); kprint("\n");
+                    finished = 1;
+                    break;
+                }
+            }
+
             kprint("\n  \033[1;33m[Accion Hardware] -> Ejecutando:\033[0m \033[1;32m$ ");
             kprint(clean_cmd);
             kprint("\033[0m\n");
@@ -1580,9 +2129,9 @@ void agent_run(const char *agent_name, const char *mission)
             vfs_write("/tmp/last_tool.log", tool_feedback_buf, fb_len);
 
             fb_puts(history_buf, 8192, &hist_len, "- Paso ");
-            fb_putc(history_buf, 8192, &hist_len, (char)('0' + step));
-            fb_puts(history_buf, 8192, &hist_len, ": ejecutaste '");
-            fb_puts(history_buf, 8192, &hist_len, clean_cmd);
+fb_put_dec(history_buf, 8192, &hist_len, (uint64_t)step);
+fb_puts(history_buf, 8192, &hist_len, ": ejecutaste '");
+            history_append_command(history_buf, 8192, &hist_len, clean_cmd);
             fb_puts(history_buf, 8192, &hist_len, "' -> Resultado: '");
 
             if (fb_len > 450) {
@@ -1606,6 +2155,14 @@ void agent_run(const char *agent_name, const char *mission)
             if (cmd_f[0] != '\0') {
                 const char *clean_cmd = cmd_f;
                 while (*clean_cmd == ' ') clean_cmd++;
+
+                if (coder_mode && clean_cmd[0] == 'w' && clean_cmd[1] == 'r' &&
+                    clean_cmd[2] == 'i' && clean_cmd[3] == 't' && clean_cmd[4] == 'e' &&
+                    clean_cmd[5] == ' ' && find_substr(clean_cmd, ".soma")) {
+                    history_add_note(history_buf, &hist_len, 8192, step,
+                        "RECHAZADO: no combines write y final. Ejecuta write como accion tool separada, luego compile y app.");
+                    continue;
+                }
                 kprint("\n  \033[1;33m[Accion Hardware Pre-Final] -> Ejecutando:\033[0m \033[1;32m$ ");
                 kprint(clean_cmd);
                 kprint("\033[0m\n");
@@ -1637,6 +2194,7 @@ void agent_run(const char *agent_name, const char *mission)
                                 find_substr(mission, "escribir") != 0 ||
                                 find_substr(mission, "copiar su contenido") != 0 ||
                                 find_substr(mission, "copia su contenido") != 0 ||
+                                find_substr(mission, ".soma") != 0 ||
                                 find_substr(mission, ".txt") != 0 ||
                                 find_substr(mission, ".sh") != 0 ||
                                 find_substr(mission, ".log") != 0);
@@ -1647,7 +2205,111 @@ void agent_run(const char *agent_name, const char *mission)
                                 find_substr(history_buf, " > ") != 0 ||
                                 (cmd_f[0] == 'w' && cmd_f[1] == 'r' && cmd_f[2] == 'i'));
 
-            if (demands_file && !file_written && step < 6) {
+            /* SOMA_CODER_VERIFICATION_GATE */
+            int is_coder_mission = (str_eq_ci(agent->name, "coder") || find_substr(mission, ".soma") != 0);
+            if (is_coder_mission) {
+                const char *write_seen = find_substr_last(history_buf, "ejecutaste 'write ");
+                const char *compile_seen = find_substr_last(history_buf, "ejecutaste 'compile ");
+                const char *compile_ok = find_substr_last(history_buf, "COMPILE OK");
+                const char *compile_ok_alt = find_substr_last(history_buf, "Compilacion exitosa");
+                const char *app_seen = find_substr_last(history_buf, "ejecutaste 'app ");
+                const char *compile_success = compile_ok;
+                const char *launch_seen = find_substr_last(history_buf, "SPAWN OK");
+                const char *run_ok = find_substr_last(history_buf, "Programa ejecutado con exito");
+                const char *run_done = find_substr_last(history_buf, "Programa finalizado con exito");
+                if (compile_ok_alt && (!compile_success || compile_ok_alt > compile_success)) compile_success = compile_ok_alt;
+                if (run_ok && (!launch_seen || run_ok > launch_seen)) launch_seen = run_ok;
+                if (run_done && (!launch_seen || run_done > launch_seen)) launch_seen = run_done;
+                /* Exigir que el ultimo compile tenga exito y que app se lance despues de esa compilacion. */
+                if (!write_seen || !compile_seen || !compile_success ||
+                    write_seen > compile_seen || compile_seen > compile_success) {
+                    kprint("\n>> [GUARDIA CODER]: Falta una compilacion correcta registrada.\n");
+                    history_add_note(history_buf, &hist_len, 8192, step,
+                        "RECHAZADO: ejecuta compile y espera el resultado COMPILE OK antes de finalizar.");
+                    continue;
+                }
+                if (!app_seen || app_seen < write_seen || app_seen < compile_success || app_seen < compile_seen) {
+                    kprint("\n>> [GUARDIA CODER]: Falta lanzar app despues de compilar.\n");
+                    history_add_note(history_buf, &hist_len, 8192, step,
+                        "RECHAZADO: tras COMPILE OK ejecuta app <ruta.soma> una vez y espera confirmacion de lanzamiento.");
+                    continue;
+                }
+                if (!launch_seen || launch_seen < app_seen) {
+                    history_add_note(history_buf, &hist_len, 8192, step,
+                        "RECHAZADO: app no tiene confirmacion de lanzamiento/ejecucion en el historial; comprueba su resultado real.");
+                    continue;
+                }
+                char target_soma[80]; target_soma[0] = '\0';
+                const char *sm = find_substr(mission, "/workspace/");
+                if (!sm) sm = find_substr(mission, "/apps/");
+                if (!sm) sm = find_substr(mission, "/");
+                if (sm) {
+                    uint32_t sp = 0;
+                    while (*sm && *sm != ' ' && *sm != ':' && *sm != '\'' && *sm != '"' && sp < sizeof(target_soma) - 1) {
+                        target_soma[sp++] = *sm++;
+                    }
+                    target_soma[sp] = '\0';
+                }
+
+                if (target_soma[0] != '\0') {
+                    static char chk_code[16384];
+                    int r_code = vfs_read(target_soma, chk_code, sizeof(chk_code) - 1);
+                    if (r_code <= 0) {
+                        kprint("\n>> [GUARDIA CODER]: Bloqueada finalizacion. Archivo vacio o no escrito.\n");
+                        history_add_note(history_buf, &hist_len, 8192, step, "RECHAZADO: El archivo no fue escrito o contiene un placeholder vacio. Debes escribir el codigo SOMA-LANG COMPLETO con 'write'.");
+                        continue;
+                    }
+                    chk_code[r_code] = '\0';
+
+                    if (find_substr(chk_code, "...") != 0 && r_code < 30) {
+                        kprint("\n>> [GUARDIA CODER]: Bloqueada finalizacion. El archivo contiene solo '...'.\n");
+                        history_add_note(history_buf, &hist_len, 8192, step, "RECHAZADO: Escribiste un placeholder '...'. Escribe el programa completo real con logica de ventanas y botones.");
+                        continue;
+                    }
+
+                    static uint8_t chk_bc[32768]; uint32_t chk_bclen = 0;
+                    int comp_err = lang_compile(chk_code, (uint32_t)r_code, chk_bc, sizeof(chk_bc), &chk_bclen);
+                    if (comp_err != 0) {
+                        const char *c_msg = lang_get_last_error_msg();
+                        uint32_t c_line = lang_get_last_error_line();
+                        const char *c_tok = lang_get_last_error_token();
+
+                        kprint("\n>> [GUARDIA CODER]: Bloqueada finalizacion. El archivo NO compila.\n");
+                        char rej_buf[384]; uint32_t rp = 0;
+                        fb_puts(rej_buf, sizeof(rej_buf), &rp, "RECHAZADO: El archivo ");
+                        fb_puts(rej_buf, sizeof(rej_buf), &rp, target_soma);
+                        fb_puts(rej_buf, sizeof(rej_buf), &rp, " NO compila. [COMPILER ERROR L");
+                        fb_put_dec(rej_buf, sizeof(rej_buf), &rp, c_line);
+                        fb_puts(rej_buf, sizeof(rej_buf), &rp, "]: ");
+                        fb_puts(rej_buf, sizeof(rej_buf), &rp, c_msg);
+                        fb_puts(rej_buf, sizeof(rej_buf), &rp, " (cerca de: '");
+                        fb_puts(rej_buf, sizeof(rej_buf), &rp, c_tok);
+                        fb_puts(rej_buf, sizeof(rej_buf), &rp, "'). Corrige el codigo usando 'write' y verifica con 'compile'.");
+
+                        history_add_note(history_buf, &hist_len, 8192, step, rej_buf);
+                        continue;
+                    }
+
+                    /* La finalización del Coder exige compilación y ausencia de errores graves de lint. */
+                    struct soma_lint_report chk_lint;
+                    lang_lint(chk_code, (uint32_t)r_code, &chk_lint);
+                    if (chk_lint.hard > 0) {
+                        char lint_rej[384];
+                        uint32_t lp = 0;
+                        int li = 0;
+                        while (li < (int)chk_lint.count && chk_lint.msg[li][0] != 'E') li++;
+                        fb_puts(lint_rej, sizeof(lint_rej), &lp,
+                                "RECHAZADO: lint detectó errores graves; corrige el archivo completo. ");
+                        if (li < (int)chk_lint.count)
+                            fb_puts(lint_rej, sizeof(lint_rej), &lp, chk_lint.msg[li]);
+                        history_add_note(history_buf, &hist_len, 8192, step, lint_rej);
+                        kprint("\n>> [GUARDIA CODER]: Bloqueada finalización. Lint detectó errores graves.\n");
+                        continue;
+                    }
+                }
+            }
+
+            if (demands_file && !file_written) {
                 kprint("\n>> [GUARDIA SOMA]: Bloqueada alucinacion. Falta escribir fisicamente el archivo.\n");
                 history_add_note(history_buf, &hist_len, 8192, step, "RECHAZADO: La mision pide crear/guardar un archivo. Debes ejecutar 'write <ruta> \"<contenido>\"' antes de finalizar.");
                 continue;
@@ -1693,6 +2355,18 @@ void agent_run(const char *agent_name, const char *mission)
         }
 
         history_add_note(history_buf, &hist_len, 8192, step, "formato JSON no reconocido.");
+    }
+
+    if (!finished && coder_mode) {
+        const char *failure = "[CODER NO VERIFICADO] Se agotaron los pasos sin confirmar escritura, compilacion correcta y lanzamiento. No se declara la tarea terminada; revisa /tmp/last_tool.log y corrige el ultimo error concreto.";
+        uint32_t fp = 0, fl = 0;
+        agent_last_response[0] = '\0';
+        fb_puts(agent_last_response, sizeof(agent_last_response), &fp, failure);
+        while (failure[fl]) fl++;
+        vfs_write("/agent/blackboard.txt", failure, fl);
+        kprint("\n"); kprint(failure); kprint("\n");
+        stm_append_interaction(agent, mission, failure);
+        finished = 1;
     }
 
     if (!finished) {
@@ -1743,15 +2417,12 @@ void agent_run(const char *agent_name, const char *mission)
         }
     }
 
-    /* Automatización visual: Abrir navegador si se generó web, o explorador si se consultó archivos/disco */
-    if (agent_created_html[0] != '\0') {
+    /* Automatización visual: solo abrir navegador si se generó HTML y hay GUI activa */
+    if (agent_created_html[0] != '\0' && fb_is_active()) {
         kprint("\n\033[1;36m[SOMA GUI] Abriendo pagina web generada en el navegador: ");
         kprint(agent_created_html);
         kprint("\033[0m\n");
         gui_open_browser(agent_created_html);
-    } else if (requested_files_info) {
-        kprint("\n\033[1;36m[SOMA GUI] Abriendo explorador de archivos del sistema (/workspace)...\033[0m\n");
-        gui_open_file_manager("/workspace");
     }
 
     kfree(agent_prompt_buf);

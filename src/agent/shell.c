@@ -4,7 +4,7 @@
 #include "mouse.h"
 #include "httpd.h"
 #include "shell.h"
-#include "lang.h"
+#include "lang/lang.h"
 #include "console.h"
 #include "fs.h"
 #include "mem.h"
@@ -1068,9 +1068,22 @@ static int cmd_write(const char *args, char *out_buf, uint32_t max_out)
         return 1;
     }
 
-    char q = 0;
+        char q = 0;
     if (*args == '"' || *args == '\'') {
         q = *args++;
+    }
+
+    const char *end_q = 0; /*PL7_WRITE_ROBUST*/
+    if (q) {
+        const char *scan = args;
+        while (*scan) {
+            if (*scan == '\\' && *(scan + 1) != '\0') {
+                scan += 2;
+                continue;
+            }
+            if (*scan == q) end_q = scan;
+            scan++;
+        }
     }
 
     char *payload = (char *)kmalloc(FS_DATA_MAX);
@@ -1081,18 +1094,16 @@ static int cmd_write(const char *args, char *out_buf, uint32_t max_out)
 
     uint32_t pi = 0;
     while (*args && pi < FS_DATA_MAX - 1) {
-        if (q && *args == q && *(args + 1) == '\0') {
+        if (q && args == end_q) {
             break;
         }
-        if (*args == '\\' && *(args + 1) == 'n') {
-            payload[pi++] = '\n';
-            args += 2;
-            continue;
-        }
-        if (*args == '\\' && *(args + 1) == 't') {
-            payload[pi++] = '\t';
-            args += 2;
-            continue;
+        if (*args == '\\' && *(args + 1) != '\0') { /*PL6_WRITE_ESCAPES*/
+            char nx = *(args + 1);
+            if (nx == 'n') { payload[pi++] = '\n'; args += 2; continue; }
+            if (nx == 't') { payload[pi++] = '\t'; args += 2; continue; }
+            if (nx == '"') { payload[pi++] = '"'; args += 2; continue; }
+            if (nx == '\'') { payload[pi++] = '\''; args += 2; continue; }
+            if (nx == '\\') { payload[pi++] = '\\'; args += 2; continue; }
         }
         payload[pi++] = *args++;
     }
@@ -2999,11 +3010,189 @@ static int cmd_uniq(const char *args, char *out_buf, uint32_t max_out)
     return 1;
 }
 
+/* SOMA_CODER_AUTONOMOUS_PATCH: Sensor sincrono de compilacion */
+static int cmd_compile(const char *args, char *out_buf, uint32_t max_out)
+{
+    while (*args == ' ') args++;
+    if (*args == '\0') {
+        kprint("Uso: compile <archivo.soma>\n");
+        if (out_buf && max_out) {
+            uint32_t p = 0; fb_puts(out_buf, max_out, &p, "Uso: compile <archivo.soma>");
+        }
+        return 1;
+    }
+
+    char path[96]; uint32_t pp = 0; char q = 0;
+    if (*args == '\'' || *args == '"') q = *args++;
+    while (*args && pp < sizeof(path) - 1) {
+        if (q && *args == q) break;
+        if (!q && *args == ' ') break;
+        path[pp++] = *args++;
+    }
+    path[pp] = '\0';
+
+    char *file_buf = (char *)kmalloc(16384);
+    if (!file_buf) {
+        kprint("compile: sin memoria.\n");
+        if (out_buf && max_out) {
+            uint32_t p = 0; fb_puts(out_buf, max_out, &p, "compile: sin memoria");
+        }
+        return 1;
+    }
+
+    int r = vfs_read(path, file_buf, 16383);
+    if (r <= 0 && path[0] != '/') {
+        char alt[112]; alt[0] = '/'; uint32_t k = 0;
+        while (path[k] && k < sizeof(alt) - 2) { alt[k + 1] = path[k]; k++; }
+        alt[k + 1] = '\0';
+        r = vfs_read(alt, file_buf, 16383);
+        if (r > 0) {
+            for (uint32_t i = 0; alt[i] && i < sizeof(path) - 1; ++i) path[i] = alt[i];
+            path[k + 1] = '\0';
+        }
+    }
+
+    if (r <= 0) {
+        kprint("compile: archivo no encontrado: '"); kprint(path); kprint("'\n");
+        if (out_buf && max_out) {
+            uint32_t p = 0;
+            fb_puts(out_buf, max_out, &p, "[COMPILE ERROR] Archivo no encontrado: ");
+            fb_puts(out_buf, max_out, &p, path);
+        }
+        kfree(file_buf);
+        return 1;
+    }
+
+    file_buf[r] = '\0';
+
+    if (r < 10) {
+        kprint("compile: archivo vacio o contiene solo placeholder (< 10 bytes).\n");
+        if (out_buf && max_out) {
+            uint32_t p = 0;
+            fb_puts(out_buf, max_out, &p, "[COMPILER ERROR]: Archivo vacio o incompleto. Escribe el codigo real sin '...'.");
+        }
+        kfree(file_buf);
+        return 1;
+    }
+
+    static uint8_t test_bc[32768]; uint32_t test_bc_len = 0;
+    int err = lang_compile(file_buf, (uint32_t)r, test_bc, sizeof(test_bc), &test_bc_len);
+
+    uint32_t p = 0;
+    if (out_buf && max_out) out_buf[0] = '\0';
+
+    if (err == 0) {
+        kprint("[COMPILE OK] '"); kprint(path); kprint("': 0 errores.\n");
+        if (out_buf && max_out) {
+            fb_puts(out_buf, max_out, &p, "[COMPILE OK] Compilacion exitosa: 0 errores (bytecode: ");
+            fb_put_dec(out_buf, max_out, &p, test_bc_len);
+            fb_puts(out_buf, max_out, &p, " bytes). Codigo valido y listo para 'app'.");
+        }
+    } else {
+        const char *last_err = lang_get_last_error_msg();
+        uint32_t err_line = lang_get_last_error_line();
+        const char *err_tok = lang_get_last_error_token();
+
+        kprint("[COMPILER ERROR L"); kprint_dec(err_line); kprint("]: ");
+        kprint(last_err); kprint(" (cerca de: '"); kprint(err_tok); kprint("')\n");
+
+        if (out_buf && max_out) {
+            fb_puts(out_buf, max_out, &p, "[COMPILER ERROR L");
+            fb_put_dec(out_buf, max_out, &p, err_line);
+            fb_puts(out_buf, max_out, &p, "]: ");
+            fb_puts(out_buf, max_out, &p, last_err);
+            fb_puts(out_buf, max_out, &p, " (cerca de: '");
+            fb_puts(out_buf, max_out, &p, err_tok);
+            fb_puts(out_buf, max_out, &p, "'). Corrige este error con 'write'.");
+        }
+    }
+
+    kfree(file_buf);
+    return 1;
+}
+
+/* SOMA_LANG_LINT_CMD: Sensor estatico de codigo para shell y Coder */
+int cmd_lang_lint(const char *args, char *out_buf, uint32_t max_out)
+{
+    char path[96];
+    char *buf;
+    uint32_t pp = 0, p = 0;
+    char q = 0;
+    int r;
+    struct soma_lint_report rep;
+
+    while (*args == ' ') args++;
+    if (*args == '\0') {
+        kprint("Uso: lint <archivo.soma>\n");
+        if (out_buf && max_out) {
+            fb_puts(out_buf, max_out, &p, "Uso: lint <archivo.soma>");
+        }
+        return 1;
+    }
+    if (*args == '\'' || *args == '"') q = *args++;
+    while (*args && pp < sizeof(path) - 1) {
+        if (q && *args == q) break;
+        if (!q && *args == ' ') break;
+        path[pp++] = *args++;
+    }
+    path[pp] = '\0';
+
+    buf = (char *)kmalloc(16384);
+    if (!buf) {
+        kprint("lint: sin memoria.\n");
+        return 1;
+    }
+    r = vfs_read(path, buf, 16383);
+    if (r <= 0 && path[0] != '/') {
+        char alt[112];
+        uint32_t k = 0;
+        alt[0] = '/';
+        while (path[k] && k < sizeof(alt) - 2) { alt[k + 1] = path[k]; k++; }
+        alt[k + 1] = '\0';
+        r = vfs_read(alt, buf, 16383);
+    }
+    if (r <= 0) {
+        kprint("lint: archivo no encontrado: '"); kprint(path); kprint("'\n");
+        if (out_buf && max_out) {
+            fb_puts(out_buf, max_out, &p, "lint: archivo no encontrado");
+        }
+        kfree(buf);
+        return 1;
+    }
+    buf[r] = '\0';
+
+    lang_lint(buf, (uint32_t)r, &rep);
+
+    kprint("\n=== SOMA-LANG LINT: "); kprint(path); kprint(" ===\n");
+    if (out_buf && max_out) out_buf[0] = '\0';
+
+    if (rep.count == 0) {
+        kprint("  0 errores, 0 advertencias. Codigo 100% limpio.\n\n");
+        if (out_buf && max_out) fb_puts(out_buf, max_out, &p, "[LINT OK] 0 errores, 0 advertencias.");
+    } else {
+        uint32_t i;
+        for (i = 0; i < rep.count; ++i) {
+            kprint("  "); kprint(rep.msg[i]); kprint("\n");
+            if (out_buf && max_out) {
+                fb_puts(out_buf, max_out, &p, rep.msg[i]);
+                fb_puts(out_buf, max_out, &p, "\n");
+            }
+        }
+        kprint("\n");
+    }
+    kfree(buf);
+    return 1;
+}
+
 static const struct command_entry cmd_table[] = {
-    /* Scripting y Automatizacion (SOMA-LANG) */
+        /* Scripting y Automatizacion (SOMA-LANG) */
     { "vm",           cmd_lang_vm,      CMD_F_SAFE,   "Test y estado de la maquina virtual SOMA-VM" },
     { "coder",        cmd_lang_coder,   CMD_F_SAFE,   "Agente programador autonomo SOMA" },
     { "run",          cmd_lang_run,     CMD_F_SAFE,   "Ejecuta un script o tokeniza codigo .soma" },
+    { "app",          cmd_lang_run,     CMD_F_SAFE,   "Lanza una aplicacion SOMA-LANG (.soma) en ventana" },
+    { "compile",      cmd_compile,      CMD_F_SAFE,   "Verifica y compila sintaxis de un script .soma sin ejecutar" },
+    { "lint",         cmd_lang_lint,    CMD_F_SAFE,   "Analisis estatico de codigo SOMA-LANG (anti-Python, placeholders, bucles)" },
+    { "check",        cmd_compile,      CMD_F_ALIAS | CMD_F_SAFE, "Alias de compile" }, /*PL5_CMD_APP*/
     { "history",       cmd_history,      CMD_F_SAFE,   "Muestra el historial persistente de comandos" },
     { "source",       cmd_source,       CMD_F_SAFE,   "Ejecuta un script de comandos por lotes (.sh)" },
     { "sh",           cmd_source,       CMD_F_ALIAS,  "Alias de source" },
@@ -3157,7 +3346,8 @@ struct help_category {
 };
 
 static const struct help_category help_categories[] = {
-    { "Ayuda y sistema",      "help sysinfo somafetch creador status uptime date whoami hostname uname clear history env export unset" },
+                { "SOMA-LANG y Coder",    "vm coder run app compile check lint" },
+        { "Ayuda y sistema",      "help app sysinfo somafetch creador status uptime date whoami hostname uname clear history env export unset" }, /*PL5_HELP_CAT*/
     { "Memoria y diagnostico","ram df mem heap pmm vmm pci arp stats test_suite health llm-diag" },
     { "Procesos",             "ps threads spawn kill sleep time" },
     { "Archivos y texto",     "ls tree cat head tail wc grep find sort uniq echo write touch mkdir rmdir cp mv rm stat du hexdump nano source" },
@@ -3551,6 +3741,7 @@ static int dispatch_command_inner(const char *cmd_line, char *out_buf, uint32_t 
     char l_quote = 0;
     for (int i = 0; cmd_line[i] && cmd_line[i + 1]; ++i) {
         char c = cmd_line[i];
+        if (i > 0 && cmd_line[i - 1] == '\\') continue;
         if (c == '"' || c == '\'') {
             if (l_quote == 0) l_quote = c;
             else if (l_quote == c) l_quote = 0;
@@ -3615,6 +3806,7 @@ static int dispatch_command_inner(const char *cmd_line, char *out_buf, uint32_t 
     char s_quote = 0;
     for (int i = 0; cmd_line[i]; ++i) {
         char c = cmd_line[i];
+        if (i > 0 && cmd_line[i - 1] == '\\') continue;
         if (c == '"' || c == '\'') {
             if (s_quote == 0) s_quote = c;
             else if (s_quote == c) s_quote = 0;
@@ -3657,6 +3849,7 @@ static int dispatch_command_inner(const char *cmd_line, char *out_buf, uint32_t 
     char p_quote = 0;
     for (int i = 0; cmd_line[i]; ++i) {
         char c = cmd_line[i];
+        if (i > 0 && cmd_line[i - 1] == '\\') continue;
         if (c == '"' || c == '\'') {
             if (p_quote == 0) p_quote = c;
             else if (p_quote == c) p_quote = 0;
@@ -3707,6 +3900,7 @@ static int dispatch_command_inner(const char *cmd_line, char *out_buf, uint32_t 
         char active_quote = 0;
         for (int i = 0; cmd_line[i]; ++i) {
             char c = cmd_line[i];
+            if (i > 0 && cmd_line[i - 1] == '\\') continue;
             if (c == '"' || c == '\'') {
                 if (active_quote == 0) active_quote = c;
                 else if (active_quote == c) active_quote = 0;
@@ -3770,7 +3964,7 @@ static int dispatch_command_inner(const char *cmd_line, char *out_buf, uint32_t 
     /* 6. Búsqueda canónica en la tabla declarativa */
     for (int i = 0; i < cmd_table_count; ++i) {
         if (str_eq(cmd_table[i].name, cmd_name)) {
-            if (agent_dispatch_mode && !(cmd_table[i].flags & CMD_F_SAFE)) {
+                        if (agent_dispatch_mode && !(cmd_table[i].flags & CMD_F_SAFE)) {
                 kprint("\n[SEGURIDAD AGENTE] Comando bloqueado: '");
                 kprint(cmd_table[i].name);
                 kprint("' no esta autorizado para el Agente ReAct.\n");
@@ -3782,7 +3976,38 @@ static int dispatch_command_inner(const char *cmd_line, char *out_buf, uint32_t 
                 goto cleanup;
             }
 
-            ret_val = cmd_table[i].handler(p, out_buf, max_out);
+                        /*PL8_AUTO_SPAWN_APP*/
+            /* Lanzar agentes y apps en background automaticamente desde la GUI para no congelar la terminal */
+                        int is_ag = (str_eq(cmd_name, "coder") || str_eq(cmd_name, "soma") || 
+                         str_eq(cmd_name, "buscador") || str_eq(cmd_name, "mayordomo") || 
+                         str_eq(cmd_name, "agent"));
+            /* SOMA_PREFLIGHT_CHECK */
+            if (str_eq(cmd_name, "app") || (str_eq(cmd_name, "run") && find_substr_ci(p, ".soma", 1) != 0)) {
+                char chk_rep[256]; chk_rep[0] = '\0';
+                cmd_compile(p, chk_rep, sizeof(chk_rep));
+                if (find_substr_ci(chk_rep, "[COMPILER ERROR", 0) != 0 ||
+                    find_substr_ci(chk_rep, "no encontrado", 0) != 0) {
+                    kprint("[SOMA-LANG] Pre-flight: error sintactico detectado. Cancelando ejecucion.\n");
+                    if (out_buf && max_out) {
+                        uint32_t ep = 0; fb_puts(out_buf, max_out, &ep, chk_rep);
+                    }
+                    ret_val = 0;
+                    goto cleanup;
+                }
+            }
+            int is_app = str_eq(cmd_name, "app") ||
+                         (str_eq(cmd_name, "run") && find_substr_ci(p, ".soma", 1) != 0); /*PL12_AUTO_SPAWN*/
+            /* 2048 es el max_out hardcodeado del worker de background, evitamos recursividad */
+            if (((is_ag && !agent_dispatch_mode) || is_app) && fb_is_active() && out_buf != 0 && max_out != 2048) {
+                char spawn_wrap[512];
+                uint32_t sw_p = 0;
+                fb_puts(spawn_wrap, sizeof(spawn_wrap), &sw_p, cmd_name);
+                fb_putc(spawn_wrap, sizeof(spawn_wrap), &sw_p, ' ');
+                fb_puts(spawn_wrap, sizeof(spawn_wrap), &sw_p, p);
+                ret_val = cmd_spawn(spawn_wrap, out_buf, max_out);
+            } else {
+                ret_val = cmd_table[i].handler(p, out_buf, max_out);
+            }
             goto cleanup;
         }
     }

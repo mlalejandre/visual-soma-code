@@ -1,0 +1,22 @@
+// ============================================================
+// SOMA-LANG: Primitivas Graficas de Framebuffer 2D (Ring 0)
+// ============================================================
+if (fb.is_active()) {
+    print("Modo grafico activo. Dibujando lienzo SOMA...");
+    fb.clear(0x0F111A); // Fondo oscuro cosmico
+    
+    // Paleta de rectangulos
+    fb.rect(100, 100, 200, 120, 0x00FF88); // Verde neon
+    fb.rect(320, 100, 200, 120, 0x38BDF8); // Azul cian
+    fb.rect(540, 100, 200, 120, 0xF43F5E); // Rosa laser
+    
+    // Generar patron procedural de pixeles
+    for (let x = 100; x < 740; x += 4) {
+        fb.pixel(x, 240, 0xFFFFFF);
+    }
+    
+    fb.present();
+    print("Geometria volcada al Framebuffer TrueColor.");
+} else {
+    print("Framebuffer inactivo (consola serie/texto). Graficos omitidos con seguridad.");
+}

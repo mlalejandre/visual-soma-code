@@ -1,0 +1,11 @@
+print("=== SOMA-LANG: ARRAYS Y BUCLES FOR ===");
+let lista = [10, 20, 30, 40, 50];
+print("Array inicial: " + lista);
+print("Longitud: " + lista.len());
+lista[1] = 999;
+print("Modificado indice 1: " + lista);
+lista.push(60);
+print("Tras push(60): " + lista);
+let s = 0;
+for (let i = 0; i < lista.len(); i += 1) { s += lista[i]; }
+print("Suma total: " + s);

@@ -16,6 +16,7 @@ struct command_entry {
     const char   *help;
 } __attribute__((aligned(8)));
 
+int  cmd_lang_lint(const char *args, char *out_buf, uint32_t max_out);
 void shell_run(void);
 int  dispatch_command(const char *cmd_line, char *out_buf, uint32_t max_out);
 int  dispatch_agent_command(const char *cmd_line, char *out_buf, uint32_t max_out);

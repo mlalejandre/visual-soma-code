@@ -13,7 +13,7 @@ CFLAGS = -DPLATFORM_$(PLATFORM) -march=armv8-a -ffreestanding -O2 -Wall -Wextra 
 endif
 
 BUILD = build/$(ARCH)
-CFLAGS += -Isrc -Isrc/core -Isrc/drivers -Isrc/fs -Isrc/net -Isrc/ui -Isrc/apps -Isrc/agent -Isrc/arch/$(ARCH)
+CFLAGS += -Isrc -Isrc/core -Isrc/drivers -Isrc/fs -Isrc/net -Isrc/ui -Isrc/apps -Isrc/agent -Isrc/lang -Isrc/arch/$(ARCH)
 
 OBJS_ARCH = \
 	$(BUILD)/boot.o \
@@ -63,7 +63,11 @@ OBJS_CORE = \
 	$(BUILD)/notepad.o \
 	$(BUILD)/memview.o $(BUILD)/js_runtime.o \
 	$(BUILD)/layout.o \
-	$(BUILD)/paint.o
+	$(BUILD)/paint.o \
+	$(BUILD)/coder_app.o \
+	$(BUILD)/vm.o \
+	$(BUILD)/lexer.o \
+	$(BUILD)/lang.o
 
 OBJS = $(OBJS_ARCH) $(OBJS_CORE)
 HEADERS = $(wildcard src/*.h) $(wildcard src/*/*.h) $(wildcard src/cursors/*.h) $(wildcard src/fonts/*.h) $(wildcard src/icons/*.h) $(wildcard src/arch/$(ARCH)/*.h)
@@ -98,6 +102,9 @@ $(BUILD)/%.o: src/ui/%.c $(HEADERS) | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/%.o: src/apps/%.c $(HEADERS) | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/%.o: src/lang/%.c $(HEADERS) | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/%.o: src/agent/%.c $(HEADERS) | $(BUILD)

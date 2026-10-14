@@ -13,6 +13,7 @@
 #include "icons/icon_layout.h"
 #include "icons/icon_agents.h"
 #include "icons/icon_paint.h"
+#include "icons/icon_coder.h"
 
 enum soma_icon_id {
     ICON_AGENT = 0,
@@ -25,7 +26,8 @@ enum soma_icon_id {
     ICON_LAYOUT = 7,
     ICON_AGENTS = 8,
     ICON_PAINT = 9,
-    ICON_COUNT = 10
+    ICON_CODER = 10,
+    ICON_COUNT = 11
 };
 
 static inline const uint8_t (*icon_get_data(int id))[16]
@@ -41,6 +43,7 @@ static inline const uint8_t (*icon_get_data(int id))[16]
         case ICON_LAYOUT:   return icon_layout_bits;
         case ICON_AGENTS:   return icon_agents_bits;
         case ICON_PAINT:    return icon_paint_bits;
+        case ICON_CODER:    return icon_coder_bits;
         default:            return icon_agent_bits;
     }
 }

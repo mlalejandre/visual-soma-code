@@ -18,6 +18,7 @@
 #include "agent.h"
 #include "ramstat.h"
 #include "io.h"
+#include "lang.h"
 #ifdef __aarch64__
 #include "arch/aarch64/rpi_fb.h"
 #endif
@@ -66,6 +67,7 @@ void kernel_main(void)
 #endif
 
     vfs_init();
+    lang_init();
 
     net_init(); /* PARCHE 047: la red debe estar viva antes del canary (ping al gateway) */
     boot_gate_check();

@@ -44,6 +44,8 @@ REMOTE_LOG_FILE = os.getenv("SOMA_LOG_FILE", "/tmp/soma-llama.log")
 
 CTX = int(os.getenv("REMOTE_CTX", "32768"))
 THREADS = int(os.getenv("REMOTE_THREADS", "8"))
+PREDICT = int(os.getenv("REMOTE_PREDICT", "16384"))
+# SOMA_PREDICT_CONFIG_V1
 CUDA_DEVICE = os.getenv("CUDA_DEVICE", "0")
 EXTRA_ARGS = os.getenv("LLAMA_EXTRA_ARGS", "")
 HEALTH_TIMEOUT_S = float(os.getenv("SERVER_HEALTH_TIMEOUT_S", "180"))
@@ -210,7 +212,7 @@ def launch(model_path: str, alias: str) -> bool:
         "--split-mode", "none",
         "--flash-attn", "on",
         "-c", str(CTX),
-        "-n", "8192",
+        "-n", str(PREDICT),
         "-np", "1",
         "-ctk", "q8_0", "-ctv", "q8_0",
         "--threads", str(THREADS),

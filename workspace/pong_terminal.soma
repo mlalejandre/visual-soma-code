@@ -1,0 +1,50 @@
+print("=== SOMA PONG (MODO TERMINAL) ===");
+print("Controles: W (arriba), S (abajo), Q (salir)");
+sys.sleep(800);
+let ancho = 38;
+let alto = 14;
+let py = 5;
+let ptam = 3;
+let bx = 18;
+let by = 6;
+let bvx = 1;
+let bvy = 1;
+let puntos = 0;
+let jugando = true;
+while (jugando) {
+    let k = sys.key();
+    if (k == 113 || k == 81 || k == 27) { jugando = false; }
+    if ((k == 119 || k == 87) && py > 1) { py -= 1; }
+    if ((k == 115 || k == 83) && py < alto - ptam - 1) { py += 1; }
+    bx += bvx;
+    by += bvy;
+    if (by <= 1 || by >= alto - 2) { bvy = -bvy; }
+    if (bx >= ancho - 2) { bvx = -bvx; }
+    if (bx <= 2 && by >= py && by < py + ptam) {
+        bvx = -bvx; bx = 3; puntos += 1;
+    }
+    if (bx < 1) {
+        bx = 18; by = 6; bvx = 1; puntos = 0;
+    }
+    sys.clear();
+    print("SOMA PONG [Terminal Ring 0] | PUNTOS: " + puntos);
+    print("+------------------------------------+");
+    for (let y = 1; y < alto - 1; y += 1) {
+        let lin = "|";
+        for (let x = 1; x < ancho - 1; x += 1) {
+            if (x == 2 && y >= py && y < py + ptam) {
+                lin += "#";
+            } else if (x == bx && y == by) {
+                lin += "O";
+            } else {
+                lin += " ";
+            }
+        }
+        lin += "|";
+        print(lin);
+    }
+    print("+------------------------------------+");
+    print("Controles: [W] Subir  [S] Bajar  [Q] Salir");
+    sys.sleep(70);
+}
+print("Partida finalizada. Puntos: " + puntos);

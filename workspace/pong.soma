@@ -1,0 +1,35 @@
+print("=== SOMA PONG ARCADE (Ring 0) ===");
+print("Controles: W (arriba), S (abajo), Q (salir)");
+let ancho = 700; let alto = 400;
+let py = 160; let ph = 80; let pw = 16; let px = 40;
+let bx = 350; let by = 200; let bvx = 7; let bvy = 5; let br = 8;
+let puntos = 0; let jugando = true;
+while (jugando) {
+    let k = sys.key();
+    if (k == 113 || k == 81 || k == 27) { jugando = false; }
+    if ((k == 119 || k == 87) && py > 15) { py -= 25; }
+    if ((k == 115 || k == 83) && py < alto - ph - 15) { py += 25; }
+    bx += bvx; by += bvy;
+    if (by <= br || by >= alto - br) { bvy = -bvy; }
+    if (bx >= ancho - br) { bvx = -bvx; }
+    if (bx - br <= px + pw && by >= py && by <= py + ph) {
+        bvx = -bvx; bx = px + pw + br; puntos += 1;
+    }
+    if (bx < 0) {
+        print("GOL! Puntos conseguidos: " + puntos);
+        bx = 350; by = 200; bvx = 7; puntos = 0;
+    }
+    if (fb.is_active()) {
+        fb.clear(0x0F1117);
+        fb.line(10, 10, ancho, 10, 0x334155);
+        fb.line(ancho, 10, ancho, alto, 0x334155);
+        fb.line(ancho, alto, 10, alto, 0x334155);
+        fb.line(10, alto, 10, 10, 0x334155);
+        fb.rect(px, py, pw, ph, 0x00FF88);
+        fb.circle(bx, by, br, 0x38BDF8);
+        fb.text(ancho / 2 - 40, 20, "PUNTOS: " + puntos, 0xFFFFFF);
+        fb.present();
+    }
+    sys.sleep(16);
+}
+print("Partida finalizada. Gracias por jugar a SOMA PONG.");

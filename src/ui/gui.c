@@ -13,6 +13,7 @@
 #include "memview.h"
 #include "layout.h"
 #include "paint.h"
+#include "coder_app.h"
 #include "console.h"
 #include "idt.h"
 #include "thread.h"
@@ -33,8 +34,10 @@ enum app_mode {
     APP_NOTEPAD,
     APP_AGENT_MEMORY,
     APP_LAYOUT,
-    APP_AGENTS,
-    APP_PAINT
+        APP_AGENTS,
+    APP_PAINT,
+    APP_CODER_APP,
+    APP_SOMA_APP /*PL12_APP_MODE*/
 };
 
 static enum app_mode current_app = APP_DESKTOP;
@@ -174,6 +177,8 @@ static uint32_t her_app_min_w(enum app_mode app)
     case APP_NOTEPAD:        return 400u;
     case APP_LAYOUT:         return 420u;
     case APP_PAINT:          return 420u;
+    case APP_CODER_APP:      return 560u;
+    case APP_SOMA_APP:       return 320u; /*PL12_APP_MIN_W*/
     case APP_TERMINAL_SHELL: return 360u;
     case APP_AGENTS:         return 400u;
     default:                 return 340u;
@@ -584,6 +589,7 @@ static void her_finish_turn(const char *resp)
 
 void gui_thought_update(const char *txt)
 {
+    coder_app_notify_thought(txt);
     her_bufs_ensure();
     if (!txt || !her_agent_busy) return;
     her_thk_reveal = 0; her_thk_len = 0;
@@ -1033,7 +1039,7 @@ static void her_draw_agent_zone(uint32_t cur_w, uint32_t cur_h, uint32_t orb_cy)
 /* SOMA ASYNC MATERIALIZE PATCH v4 */
 /* SOMA ORBITAL CALM PATCH v3 */
 /* SOMA ORBITAL ICONS PATCH v2: iconos como cuerpos en orbita estable. */
-#define HER_DOCK_ITEM_COUNT 10
+#define HER_DOCK_ITEM_COUNT 11
 #define HER_ICON_ANIM_MAX   256u
 #define HER_ICON_BOX_SIZE   44
 
@@ -1053,6 +1059,7 @@ static const struct her_dock_item her_dock_items[HER_DOCK_ITEM_COUNT] = {
     { ICON_NOTES,    0x00CBD5E1,  "NOTES",   APP_NOTEPAD },         /* Acero claro / Cristal */
     { ICON_MEMORY,   0x00818CF8,  "MEM",     APP_AGENT_MEMORY },    /* Zafiro sináptico */
     { ICON_LAYOUT,   0x0038BDF8,  "LAYOUT",  APP_LAYOUT },          /* Cian polar */
+    { ICON_CODER,    0x0000FF88,  "CODER",   APP_CODER_APP },
     { ICON_PAINT,    0x00F59E0B,  "PAINT",   APP_PAINT },           /* Ámbar / Pintura */
     { ICON_AGENTS,   0x00BAE6FD,  "AGENTES", APP_AGENTS },          /* Éter orbital */
 };
@@ -1264,6 +1271,13 @@ static void her_icon_dist(int icon, int32_t X, int32_t Y, int32_t *dm, int32_t *
 {
     int32_t m = 1 << 20, a = 1 << 20;
     switch (icon) {
+    case ICON_CODER:
+        IC_M(ic_seg(X, Y, 22, 20, 14, 32, 22));
+        IC_M(ic_seg(X, Y, 14, 32, 22, 44, 22));
+        IC_M(ic_seg(X, Y, 42, 20, 50, 32, 22));
+        IC_M(ic_seg(X, Y, 50, 32, 42, 44, 22));
+        IC_A(ic_seg(X, Y, 35, 17, 29, 47, 20));
+        break;
     case ICON_AGENT:
         IC_M(IC_RING(ic_circ(X, Y, 32, 32, 20), 24));
         IC_A(ic_circ(X, Y, 32, 32, 9));
@@ -1526,8 +1540,10 @@ static void her_draw_one_window_chrome(struct her_win_node *win, int is_active)
         case APP_NOTEPAD:        title = "Notepad"; break;
         case APP_AGENT_MEMORY:   title = "Memoria"; break;
         case APP_LAYOUT:         title = "Maquetador"; break;
-        case APP_AGENTS:         title = "Agentes"; break;
+                case APP_AGENTS:         title = "Agentes"; break;
         case APP_PAINT:          title = "SOMA Paint"; break;
+        case APP_CODER_APP:      title = "SOMA Studio :: Coder IDE"; break;
+        case APP_SOMA_APP:       title = gui_soma_win_get_title(); break; /*PL12_CHROME_TITLE*/
         default: break;
     }
     font_draw_string(x + 12, y + 8, title, title_txt, 1);
@@ -2014,8 +2030,10 @@ static uint32_t ofx_app_color(int app)
     case APP_NOTEPAD:        return 0x00F472B6u;
     case APP_AGENT_MEMORY:   return 0x00A855F7u;
     case APP_LAYOUT:         return 0x000EA5E9u;
-    case APP_AGENTS:         return 0x0034D399u;
+        case APP_AGENTS:         return 0x0034D399u;
     case APP_PAINT:          return 0x00F59E0Bu;
+    case APP_CODER_APP:      return 0x0000FF88u;
+    case APP_SOMA_APP:       return 0x0038BDF8u; /*PL12_OFX_COL*/
     default:                 return 0x007DD3FCu;
     }
 }
@@ -2511,8 +2529,10 @@ static void her_render_app_body(enum app_mode app, uint32_t wx, uint32_t wy, uin
     case APP_NOTEPAD:       notepad_render_window(wx, wy, ww, wh, is_focused); break;
     case APP_AGENT_MEMORY:  memview_render_window(wx, wy, ww, wh, is_focused); break;
     case APP_LAYOUT:        layout_render_window(wx, wy, ww, wh, is_focused);  break;
-    case APP_PAINT:         paint_render_window(wx, wy, ww, wh, is_focused);   break;
+        case APP_PAINT:         paint_render_window(wx, wy, ww, wh, is_focused);   break;
+    case APP_CODER_APP:      coder_app_render_window(wx, wy, ww, wh, is_focused); break;
     case APP_AGENTS:        agents_render_window(wx, wy, ww, wh, is_focused);  break;
+    case APP_SOMA_APP:      gui_soma_win_render_body(wx, wy, ww, wh);          break; /*PL12_RENDER_BODY*/
     default: break;
     }
     fb_reset_clip();
@@ -2596,6 +2616,7 @@ static void her_open_app(enum app_mode app, uint32_t cur_w, uint32_t cur_h)
     case APP_AGENT_MEMORY: memview_init();  break;
     case APP_LAYOUT:       layout_init();   break;
     case APP_PAINT:        paint_init();    break;
+    case APP_CODER_APP:   coder_app_init(); break;
     default: break;
     }
 }
@@ -2627,8 +2648,11 @@ static int her_vortex_total_absorbed = 0;
 static void her_close_target_window_vortex(int win_idx)
 {
     if (win_idx < 0 || win_idx >= her_num_windows) return;
-    struct her_win_node closing_win = her_windows[win_idx];
+        struct her_win_node closing_win = her_windows[win_idx];
     enum app_mode closing_app = closing_win.app;
+    if (closing_app == APP_SOMA_APP) {
+        gui_soma_win_on_close(); /*PL12_NOTIFY_CLOSE*/
+    }
 
     for (int i = win_idx; i < her_num_windows - 1; ++i) {
         her_windows[i] = her_windows[i + 1];
@@ -2669,8 +2693,10 @@ static void her_close_target_window_vortex(int win_idx)
     case APP_NOTEPAD:        app_col = 0x00F472B6u; break;
     case APP_AGENT_MEMORY:   app_col = 0x00A855F7u; break;
     case APP_LAYOUT:         app_col = 0x000EA5E9u; break;
-    case APP_AGENTS:         app_col = 0x0034D399u; break;
+        case APP_AGENTS:         app_col = 0x0034D399u; break;
     case APP_PAINT:          app_col = 0x00F59E0Bu; break;
+    case APP_CODER_APP:      app_col = 0x0000FF88u; break;
+    case APP_SOMA_APP:       app_col = 0x0038BDF8u; break; /*PL12_VORTEX_COL*/
     default:                 app_col = 0x007DD3FCu; break;
     }
 
@@ -3154,6 +3180,314 @@ static void gui_live_paint(void)
     fb_present();
 }
 
+/*PL12_SOMA_WIN_IMPL*/
+/* ====================================================================
+ * SUBSISTEMA DE VENTANA ESTANDAR SOMA-LANG (Her-Aura Canvas)
+ * ==================================================================== */
+#define SOMA_APP_SURF_W 1024
+#define SOMA_APP_SURF_H 768
+
+static uint32_t *soma_app_surf = 0;
+static uint32_t  soma_app_bg_col = 0x000F172A;
+static char      soma_app_title_buf[64] = "SOMA App";
+static volatile int soma_app_active_flag = 0;
+static volatile int soma_app_clicked_flag = 0;
+static int       soma_app_key_queue[32];
+static int       soma_app_key_head = 0;
+static int       soma_app_key_tail = 0;
+
+static void soma_app_ensure_surf(void)
+{
+    if (!soma_app_surf) {
+        soma_app_surf = (uint32_t *)kmalloc(SOMA_APP_SURF_W * SOMA_APP_SURF_H * sizeof(uint32_t));
+        if (soma_app_surf) {
+            for (uint32_t i = 0; i < SOMA_APP_SURF_W * SOMA_APP_SURF_H; ++i)
+                soma_app_surf[i] = soma_app_bg_col;
+        }
+    }
+}
+
+const char *gui_soma_win_get_title(void)
+{
+    return soma_app_title_buf[0] ? soma_app_title_buf : "SOMA App";
+}
+
+int gui_soma_win_is_active(void)
+{
+    if (!fb_is_active()) return 0;
+    return soma_app_active_flag && (her_find_window(APP_SOMA_APP) >= 0);
+}
+
+void gui_soma_win_on_close(void)
+{
+    soma_app_active_flag = 0;
+}
+
+void gui_soma_win_close(void)
+{
+    soma_app_active_flag = 0;
+    int idx = her_find_window(APP_SOMA_APP);
+    if (idx >= 0) {
+        her_close_target_window_vortex(idx);
+    }
+}
+
+int gui_soma_win_open(const char *title, int w, int h)
+{
+    if (!fb_is_active()) return 0;
+    soma_app_ensure_surf();
+    if (title && title[0]) {
+        uint32_t i = 0;
+        while (title[i] && i < sizeof(soma_app_title_buf) - 1) {
+            soma_app_title_buf[i] = title[i];
+            i++;
+        }
+        soma_app_title_buf[i] = '\0';
+    } else {
+        soma_app_title_buf[0] = 'S'; soma_app_title_buf[1] = 'O'; soma_app_title_buf[2] = 'M';
+        soma_app_title_buf[3] = 'A'; soma_app_title_buf[4] = ' '; soma_app_title_buf[5] = 'A';
+        soma_app_title_buf[6] = 'p'; soma_app_title_buf[7] = 'p'; soma_app_title_buf[8] = '\0';
+    }
+
+    uint32_t cur_w = fb_get_width();
+    uint32_t cur_h = fb_get_height();
+    if (cur_w == 0 || cur_h == 0) return 0;
+
+    int existing = her_find_window(APP_SOMA_APP);
+    if (existing >= 0) {
+        her_bring_to_front(existing);
+        if (w >= 120 && h >= 80) {
+            uint32_t nw = (uint32_t)w;
+            uint32_t nh = (uint32_t)(h + HER_TITLE_H);
+            if (nw > cur_w - 20) nw = cur_w - 20;
+            if (nh > cur_h - 20) nh = cur_h - 20;
+            her_windows[existing].w = nw;
+            her_windows[existing].h = nh;
+        }
+        soma_app_active_flag = 1;
+        gui_live_paint();
+        return 1;
+    }
+
+    her_open_app(APP_SOMA_APP, cur_w, cur_h);
+    int idx = her_find_window(APP_SOMA_APP);
+    if (idx >= 0 && w >= 120 && h >= 80) {
+        uint32_t nw = (uint32_t)w;
+        uint32_t nh = (uint32_t)(h + HER_TITLE_H);
+        if (nw > cur_w - 20) nw = cur_w - 20;
+        if (nh > cur_h - 20) nh = cur_h - 20;
+        her_windows[idx].w = nw;
+        her_windows[idx].h = nh;
+    }
+    soma_app_active_flag = 1;
+    gui_live_paint();
+    return 1;
+}
+
+void gui_soma_win_clear(uint32_t color)
+{
+    soma_app_ensure_surf();
+    if (!soma_app_surf) return;
+    soma_app_bg_col = color;
+    for (uint32_t i = 0; i < SOMA_APP_SURF_W * SOMA_APP_SURF_H; ++i) {
+        soma_app_surf[i] = color;
+    }
+}
+
+void gui_soma_win_pixel(int x, int y, uint32_t color)
+{
+    soma_app_ensure_surf();
+    if (!soma_app_surf) return;
+    if (x >= 0 && x < (int)SOMA_APP_SURF_W && y >= 0 && y < (int)SOMA_APP_SURF_H) {
+        soma_app_surf[y * SOMA_APP_SURF_W + x] = color;
+    }
+}
+
+void gui_soma_win_rect(int x, int y, int w, int h, uint32_t color)
+{
+    soma_app_ensure_surf();
+    if (!soma_app_surf || w <= 0 || h <= 0) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > (int)SOMA_APP_SURF_W) w = (int)SOMA_APP_SURF_W - x;
+    if (y + h > (int)SOMA_APP_SURF_H) h = (int)SOMA_APP_SURF_H - y;
+    if (w <= 0 || h <= 0) return;
+
+    for (int r = 0; r < h; ++r) {
+        uint32_t *row = soma_app_surf + (y + r) * SOMA_APP_SURF_W + x;
+        for (int c = 0; c < w; ++c) {
+            row[c] = color;
+        }
+    }
+}
+
+void gui_soma_win_line(int x0, int y0, int x1, int y1, uint32_t color)
+{
+    soma_app_ensure_surf();
+    if (!soma_app_surf) return;
+    int dx = (x1 >= x0) ? (x1 - x0) : (x0 - x1);
+    int dy = (y1 >= y0) ? (y1 - y0) : (y0 - y1);
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx - dy;
+
+    while (1) {
+        gui_soma_win_pixel(x0, y0, color);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x0 += sx; }
+        if (e2 < dx)  { err += dx; y0 += sy; }
+    }
+}
+
+void gui_soma_win_circle(int cx, int cy, int r, uint32_t color)
+{
+    soma_app_ensure_surf();
+    if (!soma_app_surf || r <= 0) return;
+    int x = 0, y = r, d = 3 - 2 * r;
+    while (y >= x) {
+        gui_soma_win_rect(cx - x, cy + y, 2 * x + 1, 1, color);
+        gui_soma_win_rect(cx - x, cy - y, 2 * x + 1, 1, color);
+        gui_soma_win_rect(cx - y, cy + x, 2 * y + 1, 1, color);
+        gui_soma_win_rect(cx - y, cy - x, 2 * y + 1, 1, color);
+        x++;
+        if (d > 0) {
+            y--;
+            d = d + 4 * (x - y) + 10;
+        } else {
+            d = d + 4 * x + 6;
+        }
+    }
+}
+
+void gui_soma_win_text(int x, int y, const char *str, uint32_t color)
+{
+    soma_app_ensure_surf();
+    if (!soma_app_surf || !str) return;
+    int cur_x = x;
+    int cur_y = y;
+    while (*str) {
+        char ch = *str++;
+        if (ch == '\n') {
+            cur_x = x;
+            cur_y += 10;
+            continue;
+        }
+        if (ch == ' ') {
+            cur_x += 8;
+            continue;
+        }
+        const uint8_t *g = font_get_glyph(ch);
+        if (g) {
+            for (int r = 0; r < 8; ++r) {
+                uint8_t bits = g[r];
+                for (int c = 0; c < 8; ++c) {
+                    if (bits & (1 << (7 - c))) {
+                        gui_soma_win_pixel(cur_x + c, cur_y + r, color);
+                    }
+                }
+            }
+        }
+        cur_x += 8;
+    }
+}
+
+void gui_soma_win_present(void)
+{
+    if (!fb_is_active()) return;
+    int idx = her_find_window(APP_SOMA_APP);
+    if (idx >= 0) {
+        struct her_win_node *win = &her_windows[idx];
+        fb_damage((int32_t)win->x, (int32_t)win->y, (int32_t)win->w, (int32_t)win->h);
+    }
+    fb_present();
+}
+
+void gui_soma_win_get_size(int *out_w, int *out_h)
+{
+    int idx = her_find_window(APP_SOMA_APP);
+    if (idx >= 0) {
+        *out_w = (int)her_windows[idx].w - 4;
+        *out_h = (int)her_windows[idx].h - HER_TITLE_H - 3;
+        if (*out_w < 10) *out_w = 10;
+        if (*out_h < 10) *out_h = 10;
+    } else {
+        *out_w = 640;
+        *out_h = 420;
+    }
+}
+
+void gui_soma_win_get_mouse(int *out_rx, int *out_ry, int *out_btn, int *out_inside, int *out_clicked)
+{
+    int idx = her_find_window(APP_SOMA_APP);
+    if (idx >= 0) {
+        struct her_win_node *win = &her_windows[idx];
+        int cx = (int)win->x + 2;
+        int cy = (int)win->y + HER_TITLE_H + 1;
+        int cw = (int)win->w - 4;
+        int ch = (int)win->h - HER_TITLE_H - 3;
+        int rx = g_mouse_x_s - cx;
+        int ry = g_mouse_y_s - cy;
+        *out_rx = rx;
+        *out_ry = ry;
+        *out_btn = mouse_left_held();
+        *out_inside = (rx >= 0 && ry >= 0 && rx < cw && ry < ch);
+        *out_clicked = soma_app_clicked_flag;
+        soma_app_clicked_flag = 0;
+    } else {
+        *out_rx = 0;
+        *out_ry = 0;
+        *out_btn = 0;
+        *out_inside = 0;
+        *out_clicked = 0;
+    }
+}
+
+void gui_soma_win_record_click(void)
+{
+    soma_app_clicked_flag = 1;
+}
+
+void gui_soma_win_push_key(int key)
+{
+    int next = (soma_app_key_head + 1) % 32;
+    if (next != soma_app_key_tail) {
+        soma_app_key_queue[soma_app_key_head] = key;
+        soma_app_key_head = next;
+    }
+}
+
+int gui_soma_win_get_key(void)
+{
+    if (soma_app_key_head != soma_app_key_tail) {
+        int k = soma_app_key_queue[soma_app_key_tail];
+        soma_app_key_tail = (soma_app_key_tail + 1) % 32;
+        return k;
+    }
+    if (kgetc_ready()) {
+        return (unsigned char)kgetc();
+    }
+    return 0;
+}
+
+void gui_soma_win_render_body(uint32_t wx, uint32_t wy, uint32_t ww, uint32_t wh)
+{
+    if (!soma_app_surf) {
+        fb_fill_rect(wx, wy, ww, wh, soma_app_bg_col);
+        return;
+    }
+    uint32_t copy_w = (ww < SOMA_APP_SURF_W) ? ww : SOMA_APP_SURF_W;
+    uint32_t copy_h = (wh < SOMA_APP_SURF_H) ? wh : SOMA_APP_SURF_H;
+
+    fb_blit((int32_t)wx, (int32_t)wy, soma_app_surf, (int32_t)copy_w, (int32_t)copy_h, SOMA_APP_SURF_W);
+    if (copy_w < ww) {
+        fb_fill_rect(wx + copy_w, wy, ww - copy_w, copy_h, soma_app_bg_col);
+    }
+    if (copy_h < wh) {
+        fb_fill_rect(wx, wy + copy_h, ww, wh - copy_h, soma_app_bg_col);
+    }
+}
+
 static void gui_live_file_hook(const char *name, const char *data, uint32_t len)
 {
     if (!g_live_ready || g_live_busy || !name || !name[0]) return;
@@ -3362,6 +3696,31 @@ void gui_open_layout(void)
     current_app = APP_LAYOUT;
     agent_global_focus = 0;
     layout_init();
+    cmd_vsoma("", 0, 0);
+}
+
+void gui_open_coder_app(void)
+{
+    if (gui_win_open(APP_CODER_APP)) return;
+    ensure_window_geom();
+    current_app = APP_CODER_APP;
+    agent_global_focus = 0;
+    coder_app_init();
+    cmd_vsoma("", 0, 0);
+}
+
+void gui_open_notepad(const char *path)
+{
+    if (gui_win_open(APP_NOTEPAD)) {
+        if (path && *path) notepad_load_file(path);
+        gui_live_paint();
+        return;
+    }
+    ensure_window_geom();
+    current_app = APP_NOTEPAD;
+    agent_global_focus = 0;
+    notepad_init();
+    if (path && *path) notepad_load_file(path);
     cmd_vsoma("", 0, 0);
 }
 
@@ -3673,11 +4032,17 @@ int cmd_vsoma(const char *args, char *out_buf, uint32_t max_out)
                         int act = imgview_handle_click(mouse_x, mouse_y, win_x, win_y, win_w, win_h);
                         if (act == 1) { her_close_current_app_vortex(); continue; }
                         imgview_render_window(win_x, win_y, win_w, win_h, 1);
+                    } else if (current_app == APP_CODER_APP) {
+                        int act = coder_app_handle_click(mouse_x, mouse_y, win_x, win_y, win_w, win_h);
+                        if (act == 1) { her_close_current_app_vortex(); continue; }
+                        coder_app_render_window(win_x, win_y, win_w, win_h, 1);
                     } else if (current_app == APP_PAINT) {
                         int act = paint_handle_click(mouse_x, mouse_y, win_x, win_y, win_w, win_h);
                         if (act == 1) { her_close_current_app_vortex(); continue; }
-                        paint_render_window(win_x, win_y, win_w, win_h, 1);
-                    } else if (current_app == APP_LAYOUT) {
+                                            paint_render_window(win_x, win_y, win_w, win_h, 1);
+                } else if (current_app == APP_SOMA_APP) {
+                    gui_soma_win_record_click(); /*PL12_SOMA_CLICK*/
+                } else if (current_app == APP_LAYOUT) {
                         int act = layout_handle_click(mouse_x, mouse_y, win_x, win_y, win_w, win_h);
                         if (act == 1) { her_close_current_app_vortex(); continue; }
                         else { layout_render_window(win_x, win_y, win_w, win_h, 1); }
@@ -3876,7 +4241,22 @@ int cmd_vsoma(const char *args, char *out_buf, uint32_t max_out)
                 continue;
             }
 
-            if (current_app == APP_DESKTOP) continue;
+                        if (current_app == APP_DESKTOP) continue;
+            if (current_app == APP_SOMA_APP) { /*PL12_SOMA_KEY*/
+                if (c == 27) {
+                    her_close_current_app_vortex();
+                } else {
+                    gui_soma_win_push_key((int)(unsigned char)c);
+                }
+                continue;
+            }
+            if (current_app == APP_CODER_APP) {
+                if (c == 27) { her_close_current_app_vortex(); continue; }
+                coder_app_handle_key(c);
+                coder_app_render_window(win_x, win_y, win_w, win_h, 1);
+                fb_present();
+                continue;
+            }
             if (current_app == APP_AGENTS) {
                 agents_render_window(win_x, win_y, win_w, win_h, 1);
                 fb_present();

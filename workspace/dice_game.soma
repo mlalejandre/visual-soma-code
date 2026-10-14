@@ -1,0 +1,47 @@
+// SOMA-LANG: Videojuego de Dados (Usuario vs Maquina)
+print("====================================");
+print("   JUEGO DE DADOS: USUARIO VS MAQUINA");
+print("====================================");
+print("Gana el que obtenga mayor puntuacion!");
+print("");
+
+let rondas = 3;
+let r = 1;
+let puntos_usuario = 0;
+let puntos_maquina = 0;
+
+while (r <= rondas) {
+    print("--- RONDA " + r + " de " + rondas + " ---");
+    let enter = input("Presiona ENTER para lanzar tu dado... ");
+    
+    let dado_user = random.int(1, 6);
+    let dado_maq = random.int(1, 6);
+    
+    print("Tu tirada: " + dado_user);
+    print("Tirada de la maquina: " + dado_maq);
+    
+    if (dado_user > dado_maq) {
+        puntos_usuario = puntos_usuario + 1;
+        print(">> Ganaste esta ronda!");
+    } else if (dado_maq > dado_user) {
+        puntos_maquina = puntos_maquina + 1;
+        print(">> La maquina gana esta ronda.");
+    } else {
+        print(">> Empate en esta ronda.");
+    }
+    print("");
+    r = r + 1;
+}
+
+print("====================================");
+print("         RESULTADOS FINALES");
+print("====================================");
+print("Puntuacion final: Tu " + puntos_usuario + " - " + puntos_maquina + " Maquina");
+
+if (puntos_usuario > puntos_maquina) {
+    print("ENHORABUENA! Has ganado la partida!");
+} else if (puntos_maquina > puntos_usuario) {
+    print("La maquina ha ganado. Mas suerte la proxima vez!");
+} else {
+    print("Partida empatada!");
+}
